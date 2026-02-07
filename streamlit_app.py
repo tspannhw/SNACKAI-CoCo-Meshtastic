@@ -24,6 +24,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import json
 import os
+import requests
 
 st.set_page_config(
     page_title="Meshtastic Mesh Network Dashboard",
@@ -115,6 +116,42 @@ def get_battery_status(level):
         return "#ff6b6b", "low"
 
 
+def clamp_battery(level):
+    """Clamp battery level to valid range [0, 100]."""
+    if level is None or pd.isna(level):
+        return None
+    return max(0, min(100, int(level)))
+
+
+def send_slack_message(webhook_url: str, message: str, channel: str = None) -> bool:
+    """Send a message to Slack via webhook."""
+    try:
+        payload = {"text": message}
+        if channel:
+            payload["channel"] = channel
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        st.error(f"Slack error: {e}")
+        return False
+
+
+def format_slack_alert(device_id: str, alert_type: str, data: dict) -> str:
+    """Format alert message for Slack."""
+    emoji = {
+        "low_battery": "🔋",
+        "position_update": "📍",
+        "offline": "⚠️",
+        "telemetry": "📊"
+    }.get(alert_type, "📡")
+    
+    msg = f"{emoji} *Meshtastic Alert: {alert_type.replace('_', ' ').title()}*\n"
+    msg += f"Device: `{device_id}`\n"
+    for key, value in data.items():
+        msg += f"• {key}: {value}\n"
+    return msg
+
+
 def main():
     st.title("📡 Meshtastic Mesh Network Dashboard")
     st.markdown("""
@@ -163,6 +200,35 @@ def main():
             - Environmental: temp, humidity, pressure
             - Network: SNR, RSSI, hop count
             """)
+        
+        st.divider()
+        with st.expander("Slack Notifications"):
+            slack_webhook = st.text_input(
+                "Slack Webhook URL",
+                type="password",
+                key="slack_webhook",
+                help="Enter your Slack incoming webhook URL"
+            )
+            slack_channel = st.text_input(
+                "Channel (optional)",
+                placeholder="#meshtastic-alerts",
+                key="slack_channel"
+            )
+            enable_slack = st.checkbox("Enable Slack alerts", value=False, key="enable_slack")
+            
+            if st.button("Test Slack Connection"):
+                if slack_webhook:
+                    test_msg = format_slack_alert(
+                        "test-device",
+                        "telemetry",
+                        {"Status": "Test message from Meshtastic Dashboard", "Time": datetime.now().strftime('%H:%M:%S')}
+                    )
+                    if send_slack_message(slack_webhook, test_msg, slack_channel):
+                        st.success("Test message sent!")
+                    else:
+                        st.error("Failed to send test message")
+                else:
+                    st.warning("Enter webhook URL first")
         
         st.divider()
         st.caption("Data Source:")
@@ -229,13 +295,14 @@ def main():
     except Exception as e:
         st.warning(f"Could not load statistics: {e}")
     
-    tab_map, tab_device, tab_env, tab_gps, tab_analytics, tab_raw = st.tabs([
+    tab_map, tab_device, tab_env, tab_gps, tab_analytics, tab_raw, tab_slack = st.tabs([
         "🗺️ Live Map",
         "🔋 Device Status", 
         "🌡️ Environmental",
         "📍 GPS Details",
         "📊 Analytics",
-        "🔍 Raw Data"
+        "🔍 Raw Data",
+        "📢 Slack"
     ])
     
     with tab_map:
@@ -418,8 +485,15 @@ def main():
                         
                         with col2:
                             if battery and not pd.isna(battery):
+                                clamped_battery = clamp_battery(battery)
                                 st.metric("Battery", f"{int(battery)}%")
-                                st.progress(int(battery) / 100)
+                                st.progress(clamped_battery / 100)
+                                if enable_slack and slack_webhook and clamped_battery < 20:
+                                    alert_msg = format_slack_alert(
+                                        node_id, "low_battery",
+                                        {"Battery": f"{clamped_battery}%", "Voltage": f"{voltage:.2f}V" if voltage else "N/A"}
+                                    )
+                                    send_slack_message(slack_webhook, alert_msg, slack_channel)
                             else:
                                 st.metric("Battery", "N/A")
                         
@@ -591,9 +665,7 @@ def main():
                 hdop,
                 vdop,
                 gps_timestamp,
-                precision_bits,
-                fix_type,
-                fix_quality
+                precision_bits
             FROM DEMO.DEMO.MESHTASTIC_DATA
             WHERE packet_type = 'position'
               AND latitude IS NOT NULL
@@ -874,6 +946,94 @@ def main():
                 
         except Exception as e:
             st.error(f"Error loading data: {e}")
+    
+    with tab_slack:
+        st.subheader("Slack Integration")
+        st.markdown("Send alerts and device updates to Slack channels")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Manual Alert")
+            alert_node = st.text_input("Device ID", placeholder="!b9d44b14")
+            alert_type = st.selectbox(
+                "Alert Type",
+                ["position_update", "telemetry", "low_battery", "offline", "custom"]
+            )
+            custom_message = st.text_area("Custom Message (optional)", height=100)
+            
+            if st.button("Send Alert to Slack", type="primary"):
+                webhook = st.session_state.get("slack_webhook", "")
+                channel = st.session_state.get("slack_channel", "")
+                if webhook:
+                    if custom_message:
+                        msg = f"📡 *Meshtastic Manual Alert*\nDevice: `{alert_node}`\n{custom_message}"
+                    else:
+                        msg = format_slack_alert(
+                            alert_node or "unknown",
+                            alert_type,
+                            {"Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Source": "Manual Dashboard Alert"}
+                        )
+                    if send_slack_message(webhook, msg, channel):
+                        st.success("Alert sent to Slack!")
+                    else:
+                        st.error("Failed to send alert")
+                else:
+                    st.warning("Configure Slack webhook in sidebar first")
+        
+        with col2:
+            st.markdown("#### Latest Device Summary")
+            try:
+                summary_query = f"""
+                SELECT 
+                    from_id,
+                    MAX(battery_level) as battery,
+                    MAX(latitude) as lat,
+                    MAX(longitude) as lon,
+                    MAX(temperature) as temp,
+                    MAX(ingested_at) as last_seen
+                FROM DEMO.DEMO.MESHTASTIC_DATA
+                WHERE ingested_at >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
+                GROUP BY from_id
+                """
+                summary = run_query(summary_query)
+                
+                if not summary.empty:
+                    selected_device = st.selectbox(
+                        "Select device to share",
+                        summary['FROM_ID'].tolist()
+                    )
+                    
+                    if st.button("Share Device Status to Slack"):
+                        webhook = st.session_state.get("slack_webhook", "")
+                        channel = st.session_state.get("slack_channel", "")
+                        if webhook:
+                            device_row = summary[summary['FROM_ID'] == selected_device].iloc[0]
+                            data = {
+                                "Battery": f"{device_row['BATTERY']}%" if device_row['BATTERY'] else "N/A",
+                                "Location": f"{device_row['LAT']:.4f}, {device_row['LON']:.4f}" if device_row['LAT'] else "N/A",
+                                "Temperature": f"{device_row['TEMP']:.1f}°C" if device_row['TEMP'] else "N/A",
+                                "Last Seen": str(device_row['LAST_SEEN'])[:19]
+                            }
+                            msg = format_slack_alert(selected_device, "telemetry", data)
+                            if send_slack_message(webhook, msg, channel):
+                                st.success("Device status shared!")
+                        else:
+                            st.warning("Configure Slack webhook in sidebar first")
+                    
+                    st.dataframe(summary, use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.error(f"Error loading summary: {e}")
+        
+        st.divider()
+        st.markdown("#### Slack Setup Instructions")
+        st.markdown("""
+        1. Go to [Slack API Apps](https://api.slack.com/apps)
+        2. Create a new app or select existing
+        3. Enable **Incoming Webhooks**
+        4. Create a webhook URL for your channel
+        5. Paste the webhook URL in the sidebar
+        """)
     
     st.divider()
     
