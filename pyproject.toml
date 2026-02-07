@@ -1,0 +1,95 @@
+[project]
+name = "meshtastic-snowflake-streamer"
+version = "1.0.0"
+description = "Stream Meshtastic mesh network data to Snowflake via Snowpipe Streaming v2"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "Tim Spann", email = "tspann@snowflake.com" }
+]
+keywords = ["meshtastic", "snowflake", "iot", "lora", "streaming", "sensecap"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Internet :: Log Analysis",
+]
+
+dependencies = [
+    "meshtastic>=2.3.0",
+    "PyJWT>=2.8.0",
+    "cryptography>=42.0.0",
+    "requests>=2.31.0,<2.32.4",
+    "pypubsub>=4.0.3",
+    "bleak>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+]
+streamlit = [
+    "streamlit>=1.32.0",
+    "plotly>=5.18.0",
+    "pandas>=2.0.0",
+    "pydeck>=0.8.0",
+    "snowflake-snowpark-python>=1.14.0",
+]
+notebook = [
+    "jupyter>=1.0.0",
+    "ipykernel>=6.29.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+]
+all = [
+    "meshtastic-snowflake-streamer[dev,streamlit,notebook]",
+]
+
+[project.scripts]
+meshtastic-stream = "meshtastic_snowflake_streamer:main"
+sensecap-test = "test_sensecap:main"
+
+[project.urls]
+Homepage = "https://github.com/tspannhw/meshtastic-snowflake"
+Documentation = "https://github.com/tspannhw/meshtastic-snowflake#readme"
+Repository = "https://github.com/tspannhw/meshtastic-snowflake"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

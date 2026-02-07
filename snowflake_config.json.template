@@ -1,0 +1,18 @@
+{
+    "account": "YOUR_ACCOUNT_IDENTIFIER",
+    "user": "YOUR_USERNAME",
+    "role": "ACCOUNTADMIN",
+    "private_key_file": "rsa_key.p8",
+    "database": "DEMO",
+    "schema": "DEMO",
+    "table": "MESHTASTIC_DATA",
+    "pipe": "SNOWPIPE_STREAMING_MESHTASTIC",
+    "channel_name": "meshtastic_channel",
+    "batch_size": 10,
+    "flush_interval_seconds": 5,
+    "meshtastic": {
+        "connection_type": "serial",
+        "device_path": null,
+        "hostname": null
+    }
+}

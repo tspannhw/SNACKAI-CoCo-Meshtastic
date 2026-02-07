@@ -1,0 +1,5 @@
+meshtastic>=2.3.0
+PyJWT>=2.8.0
+cryptography>=42.0.0
+requests>=2.31.0
+pypubsub>=4.0.3
