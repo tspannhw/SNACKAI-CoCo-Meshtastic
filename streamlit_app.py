@@ -67,9 +67,8 @@ def get_snowflake_connection():
         return get_active_session()
     except Exception:
         import snowflake.connector
-        conn = snowflake.connector.connect(
-            connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME", "default")
-        )
+        conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "tspann1")
+        conn = snowflake.connector.connect(connection_name=conn_name)
         return conn
 
 
