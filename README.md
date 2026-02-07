@@ -298,6 +298,48 @@ CREATE OR REPLACE STREAMLIT DEMO.DEMO.MESHTASTIC_DASHBOARD
 | **GPS Details** | Position accuracy, satellites, altitude profiles |
 | **Analytics** | Packet distribution, traffic patterns, node activity |
 | **Raw Data** | Browse and export raw packet data |
+| **Slack** | Send manual alerts and device status to Slack |
+
+## Slack Integration
+
+The streamer and dashboard support Slack notifications for real-time alerts.
+
+### Setup Slack Webhook
+
+1. Go to [Slack API Apps](https://api.slack.com/apps)
+2. Create a new app or select existing
+3. Enable **Incoming Webhooks**
+4. Create a webhook URL for your channel
+5. Add the webhook URL to config
+
+### Configure in `snowflake_config.json`
+
+```json
+{
+    "slack": {
+        "enabled": true,
+        "webhook_url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+        "channel": "#meshtastic-alerts",
+        "low_battery_threshold": 20,
+        "notify_position": false
+    }
+}
+```
+
+### Alert Types
+
+| Alert | Trigger | Description |
+|-------|---------|-------------|
+| **Low Battery** | Battery ≤ threshold | Automatic alert when device battery is low |
+| **Position Update** | New GPS fix | Optional notification for location changes |
+| **Manual Alert** | Dashboard button | Send custom alerts from Slack tab |
+
+### Dashboard Slack Features
+
+- Configure webhook URL in sidebar
+- Test Slack connection
+- Send manual alerts with custom messages
+- Share device status summaries
 
 ## Data Captured
 
