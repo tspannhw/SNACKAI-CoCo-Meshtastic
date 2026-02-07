@@ -15,6 +15,7 @@ import signal
 import sys
 import threading
 import atexit
+import requests
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from queue import Queue, Empty
@@ -46,6 +47,12 @@ class MeshtasticSnowflakeStreamer:
         
         self.streaming_client = None
         self.meshtastic_receiver = None
+        
+        self.slack_config = self.config.get('slack', {})
+        self.slack_webhook = self.slack_config.get('webhook_url')
+        self.slack_channel = self.slack_config.get('channel')
+        self.slack_alerts_enabled = self.slack_config.get('enabled', False)
+        self.low_battery_threshold = self.slack_config.get('low_battery_threshold', 20)
         
         self._shutdown_event = threading.Event()
         self._setup_signal_handlers()
@@ -83,6 +90,53 @@ class MeshtasticSnowflakeStreamer:
         temp = message.get('temperature')
         bat = message.get('battery_level')
         logger.debug(f"Queued {pkt_type} message: lat={lat}, lon={lon}, temp={temp}, bat={bat} (queue: {self.message_queue.qsize()})")
+        
+        if self.slack_alerts_enabled and self.slack_webhook:
+            self._check_slack_alerts(message)
+    
+    def _send_slack_message(self, message: str) -> bool:
+        try:
+            payload = {"text": message}
+            if self.slack_channel:
+                payload["channel"] = self.slack_channel
+            response = requests.post(self.slack_webhook, json=payload, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Slack error: {e}")
+            return False
+    
+    def _check_slack_alerts(self, message: Dict):
+        device_id = message.get('from_id', 'unknown')
+        pkt_type = message.get('packet_type', '')
+        
+        battery = message.get('battery_level')
+        if battery is not None and battery <= self.low_battery_threshold:
+            voltage = message.get('voltage', 'N/A')
+            alert = (
+                f"🔋 *Low Battery Alert*\n"
+                f"Device: `{device_id}`\n"
+                f"• Battery: {battery}%\n"
+                f"• Voltage: {voltage}V\n"
+                f"• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            self._send_slack_message(alert)
+            logger.info(f"Sent low battery alert for {device_id}")
+        
+        if pkt_type == 'position':
+            lat = message.get('latitude')
+            lon = message.get('longitude')
+            alt = message.get('altitude')
+            if lat and lon:
+                alert = (
+                    f"📍 *Position Update*\n"
+                    f"Device: `{device_id}`\n"
+                    f"• Location: {lat:.6f}, {lon:.6f}\n"
+                    f"• Altitude: {alt}m\n"
+                    f"• Satellites: {message.get('sats_in_view', 'N/A')}\n"
+                    f"• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                if self.slack_config.get('notify_position', False):
+                    self._send_slack_message(alert)
     
     def _prepare_row(self, message: Dict) -> Dict:
         def convert_value(v, depth=0):
