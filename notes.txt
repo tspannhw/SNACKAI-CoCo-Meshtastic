@@ -1,1 +1,4 @@
 https://wiki.seeedstudio.com/sensecap_t1000_e/
+https://meshtastic.org/docs/hardware/devices/seeed-studio/sensecap/card-tracker/
+
+https://client.meshtastic.org/messages/broadcast/0

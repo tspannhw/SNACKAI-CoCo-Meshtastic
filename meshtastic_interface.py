@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class MeshtasticReceiver:
     def __init__(
         self,
-        connection_type: str = 'serial',
+        connection_type: str = 'auto',
         device_path: str = None,
         hostname: str = None,
         on_message_callback: Callable = None,
@@ -26,6 +26,49 @@ class MeshtasticReceiver:
         self.interface = None
         self.running = False
         self.message_queue = []
+        self.connected_via = None
+    
+    @staticmethod
+    def scan_serial_devices() -> List[Dict]:
+        """Scan for available Meshtastic serial devices"""
+        try:
+            import serial.tools.list_ports
+            
+            logger.info("Scanning for serial devices...")
+            ports = list(serial.tools.list_ports.comports())
+            meshtastic_devices = []
+            
+            for port in ports:
+                desc = (port.description or "").lower()
+                mfr = (port.manufacturer or "").lower()
+                
+                if "boot" in desc:
+                    logger.debug(f"Skipping bootloader device: {port.device}")
+                    continue
+                
+                is_meshtastic = any(kw in desc or kw in mfr for kw in [
+                    "meshtastic", "t1000", "sensecap", "cp210", "ch340", 
+                    "ch9102", "ftdi", "silabs", "silicon labs", "esp32",
+                    "seeed", "heltec", "lilygo", "rak", "wisblock"
+                ])
+                
+                if is_meshtastic or ("usb" in desc.lower() and "billboard" not in desc.lower()):
+                    meshtastic_devices.append({
+                        'port': port.device,
+                        'description': port.description,
+                        'manufacturer': port.manufacturer,
+                        'vid': port.vid,
+                        'pid': port.pid
+                    })
+                    logger.info(f"Found serial device: {port.device} - {port.description}")
+            
+            return meshtastic_devices
+        except ImportError:
+            logger.error("Serial scanning requires 'pyserial' package")
+            return []
+        except Exception as e:
+            logger.error(f"Serial scan error: {e}")
+            return []
     
     def scan_ble_devices(self) -> List[Dict]:
         """Scan for available Meshtastic BLE devices"""
@@ -33,7 +76,7 @@ class MeshtasticReceiver:
             import asyncio
             from bleak import BleakScanner
             
-            logger.info("Scanning for Bluetooth devices...")
+            logger.info(f"Scanning for Bluetooth devices ({self.ble_scan_timeout}s)...")
             
             async def scan():
                 devices = await BleakScanner.discover(timeout=self.ble_scan_timeout)
@@ -41,58 +84,139 @@ class MeshtasticReceiver:
                 
                 for d in devices:
                     name = d.name or ""
-                    if any(kw in name.lower() for kw in ["meshtastic", "t1000", "sensecap", "mesh"]):
+                    if any(kw in name.lower() for kw in ["meshtastic", "t1000", "sensecap", "mesh", "tracker"]):
                         meshtastic_devices.append({
                             'address': d.address,
                             'name': d.name,
-                            'rssi': getattr(d, 'rssi', None)
+                            'rssi': getattr(d, 'rssi', None),
+                            'type': 'ble'
                         })
-                        logger.info(f"Found Meshtastic device: {d.name} ({d.address})")
+                        logger.info(f"Found BLE device: {d.name} ({d.address}) RSSI: {getattr(d, 'rssi', 'N/A')}")
                 
                 return meshtastic_devices
             
             return asyncio.run(scan())
         except ImportError:
-            logger.error("BLE scanning requires 'bleak' package: pip install bleak")
+            logger.warning("BLE scanning requires 'bleak' package: pip install bleak")
             return []
         except Exception as e:
             logger.error(f"BLE scan error: {e}")
             return []
+    
+    def scan_all_devices(self) -> Dict[str, List[Dict]]:
+        """Scan for all available Meshtastic devices (BLE and serial)"""
+        logger.info("=" * 50)
+        logger.info("SCANNING FOR MESHTASTIC DEVICES")
+        logger.info("=" * 50)
+        
+        results = {
+            'ble': [],
+            'serial': []
+        }
+        
+        results['serial'] = self.scan_serial_devices()
+        results['ble'] = self.scan_ble_devices()
+        
+        total = len(results['serial']) + len(results['ble'])
+        logger.info(f"Scan complete: {len(results['serial'])} serial, {len(results['ble'])} BLE devices found")
+        logger.info("=" * 50)
+        
+        return results
         
     def connect(self):
         import meshtastic
         
-        if self.connection_type == 'serial':
-            import meshtastic.serial_interface
-            if self.device_path:
-                self.interface = meshtastic.serial_interface.SerialInterface(devPath=self.device_path)
-            else:
-                self.interface = meshtastic.serial_interface.SerialInterface()
-            logger.info(f"Connected via serial: {self.device_path or 'auto-detected'}")
-            
+        if self.connection_type == 'auto':
+            return self._connect_auto()
+        elif self.connection_type == 'serial':
+            return self._connect_serial()
         elif self.connection_type == 'tcp':
-            import meshtastic.tcp_interface
-            if not self.hostname:
-                raise ValueError("hostname required for TCP connection")
-            self.interface = meshtastic.tcp_interface.TCPInterface(hostname=self.hostname)
-            logger.info(f"Connected via TCP to {self.hostname}")
-            
+            return self._connect_tcp()
         elif self.connection_type == 'ble':
-            self._connect_ble()
-            
+            return self._connect_ble_with_fallback()
+        elif self.connection_type == 'test':
+            logger.info("Test mode - no device connection")
+            return self
         else:
             raise ValueError(f"Unknown connection type: {self.connection_type}")
+    
+    def _connect_auto(self):
+        """Auto-detect and connect to best available device"""
+        devices = self.scan_all_devices()
         
-        pub.subscribe(self._on_receive, "meshtastic.receive")
-        pub.subscribe(self._on_connection, "meshtastic.connection.established")
-        pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
-        pub.subscribe(self._on_position, "meshtastic.receive.position")
-        pub.subscribe(self._on_text, "meshtastic.receive.text")
-        pub.subscribe(self._on_telemetry, "meshtastic.receive.data.67")
+        if devices['serial']:
+            logger.info("Trying serial connection first (more reliable)...")
+            try:
+                self.device_path = devices['serial'][0]['port']
+                self._connect_serial()
+                return self
+            except Exception as e:
+                logger.warning(f"Serial connection failed: {e}")
         
-        time.sleep(2)
+        if devices['ble']:
+            logger.info("Trying BLE connection...")
+            try:
+                self.device_path = devices['ble'][0]['address']
+                self._connect_ble()
+                return self
+            except Exception as e:
+                logger.warning(f"BLE connection failed: {e}")
         
+        raise ConnectionError("No Meshtastic devices found or all connections failed")
+    
+    def _connect_serial(self):
+        """Connect via serial port"""
+        import meshtastic.serial_interface
+        
+        if not self.device_path:
+            devices = self.scan_serial_devices()
+            if devices:
+                self.device_path = devices[0]['port']
+                logger.info(f"Auto-selected serial: {self.device_path}")
+            else:
+                logger.info("No device path specified, letting meshtastic auto-detect...")
+        
+        if self.device_path:
+            self.interface = meshtastic.serial_interface.SerialInterface(devPath=self.device_path)
+        else:
+            self.interface = meshtastic.serial_interface.SerialInterface()
+        
+        self.connected_via = 'serial'
+        logger.info(f"Connected via serial: {self.device_path or 'auto-detected'}")
+        
+        self._setup_subscriptions()
         return self
+    
+    def _connect_tcp(self):
+        """Connect via TCP/IP"""
+        import meshtastic.tcp_interface
+        
+        if not self.hostname:
+            raise ValueError("hostname required for TCP connection")
+        
+        self.interface = meshtastic.tcp_interface.TCPInterface(hostname=self.hostname)
+        self.connected_via = 'tcp'
+        logger.info(f"Connected via TCP to {self.hostname}")
+        
+        self._setup_subscriptions()
+        return self
+    
+    def _connect_ble_with_fallback(self):
+        """Connect via BLE with fallback to serial if it fails"""
+        try:
+            self._connect_ble()
+            return self
+        except Exception as e:
+            logger.warning(f"BLE connection failed: {e}")
+            logger.info("Falling back to serial connection...")
+            
+            serial_devices = self.scan_serial_devices()
+            if serial_devices:
+                self.device_path = serial_devices[0]['port']
+                self._connect_serial()
+                return self
+            else:
+                raise ConnectionError(f"BLE failed ({e}) and no serial devices found")
     
     def _connect_ble(self):
         """Connect via Bluetooth Low Energy"""
@@ -112,7 +236,18 @@ class MeshtasticReceiver:
         
         logger.info(f"Connecting to BLE device: {self.device_path}")
         self.interface = meshtastic.ble_interface.BLEInterface(address=self.device_path)
+        self.connected_via = 'ble'
         logger.info(f"Connected via BLE: {self.device_path}")
+        
+        self._setup_subscriptions()
+        return self
+    
+    def _setup_subscriptions(self):
+        """Setup pubsub message subscriptions"""
+        pub.subscribe(self._on_receive, "meshtastic.receive")
+        pub.subscribe(self._on_connection, "meshtastic.connection.established")
+        pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
+        time.sleep(2)
     
     def _on_connection(self, interface, topic=pub.AUTO_TOPIC):
         logger.info("Connected to Meshtastic device")
@@ -132,56 +267,85 @@ class MeshtasticReceiver:
     
     def _on_receive(self, packet, interface):
         try:
-            message = self._parse_packet(packet)
+            decoded = packet.get('decoded', {})
+            portnum = decoded.get('portnum', '')
+            portnum_str = str(portnum)
+            
+            is_position = (
+                'POSITION' in portnum_str or 
+                portnum == 3 or 
+                'position' in decoded
+            )
+            is_text = (
+                'TEXT' in portnum_str or 
+                portnum == 1 or 
+                'text' in decoded
+            )
+            is_telemetry = (
+                'TELEMETRY' in portnum_str or 
+                portnum == 67 or 
+                'telemetry' in decoded
+            )
+            is_nodeinfo = (
+                'NODEINFO' in portnum_str or 
+                portnum == 4 or 
+                'user' in decoded
+            )
+            
+            logger.debug(f"Packet portnum={portnum} ({portnum_str}), decoded keys: {list(decoded.keys())}")
+            
+            if is_position:
+                message = self._parse_position_packet(packet)
+                if message:
+                    logger.info(f"Position from {message.get('from_id')}: lat={message.get('latitude')}, lon={message.get('longitude')}, alt={message.get('altitude')}")
+            elif is_text:
+                message = self._parse_text_packet(packet)
+                if message:
+                    text = message.get('text', '')[:50]
+                    logger.info(f"Text from {message.get('from_id')}: {text}")
+            elif is_telemetry:
+                message = self._parse_telemetry_packet(packet)
+                if message:
+                    temp = message.get('temperature')
+                    bat = message.get('battery_level')
+                    volt = message.get('voltage')
+                    logger.info(f"Telemetry from {message.get('from_id')}: temp={temp}, battery={bat}%, voltage={volt}V")
+            elif is_nodeinfo:
+                message = self._parse_nodeinfo_packet(packet)
+                if message:
+                    logger.info(f"NodeInfo from {message.get('from_id')}: {message.get('long_name')}")
+            else:
+                message = self._parse_packet(packet)
+                logger.info(f"Other packet type '{portnum}' from {message.get('from_id')}, decoded: {list(decoded.keys())}")
+            
             if message:
-                logger.debug(f"Received packet type: {message.get('packet_type')}")
                 self.message_queue.append(message)
-                
                 if self.on_message_callback:
                     self.on_message_callback(message)
+                    
         except Exception as e:
             logger.error(f"Error processing packet: {e}", exc_info=True)
     
-    def _on_position(self, packet, interface):
-        try:
-            message = self._parse_position_packet(packet)
-            if message:
-                logger.info(f"Position from {message.get('from_id')}: lat={message.get('latitude')}, lon={message.get('longitude')}")
-                self.message_queue.append(message)
-                
-                if self.on_message_callback:
-                    self.on_message_callback(message)
-        except Exception as e:
-            logger.error(f"Error processing position: {e}", exc_info=True)
-    
-    def _on_text(self, packet, interface):
-        try:
-            message = self._parse_text_packet(packet)
-            if message:
-                logger.info(f"Text from {message.get('from_id')}: {message.get('text')[:50]}...")
-                self.message_queue.append(message)
-                
-                if self.on_message_callback:
-                    self.on_message_callback(message)
-        except Exception as e:
-            logger.error(f"Error processing text message: {e}", exc_info=True)
-    
-    def _on_telemetry(self, packet, interface):
-        try:
-            message = self._parse_telemetry_packet(packet)
-            if message:
-                temp = message.get('temperature')
-                if temp is not None:
-                    temp_f = (temp * 9/5) + 32
-                    logger.info(f"Telemetry from {message.get('from_id')}: temp={temp:.1f}°C/{temp_f:.1f}°F")
-                else:
-                    logger.debug(f"Telemetry from {message.get('from_id')}")
-                self.message_queue.append(message)
-                
-                if self.on_message_callback:
-                    self.on_message_callback(message)
-        except Exception as e:
-            logger.error(f"Error processing telemetry: {e}", exc_info=True)
+    def _parse_nodeinfo_packet(self, packet: Dict) -> Optional[Dict]:
+        message = self._parse_packet(packet)
+        if not message:
+            return None
+        
+        message['packet_type'] = 'nodeinfo'
+        
+        decoded = packet.get('decoded', {})
+        user = decoded.get('user', {})
+        
+        message.update({
+            'user_id': user.get('id'),
+            'long_name': user.get('longName'),
+            'short_name': user.get('shortName'),
+            'hw_model': str(user.get('hwModel')) if user.get('hwModel') else None,
+            'is_licensed': user.get('isLicensed'),
+            'role': str(user.get('role')) if user.get('role') else None,
+        })
+        
+        return message
     
     def _parse_packet(self, packet: Dict) -> Optional[Dict]:
         from_id = packet.get('fromId', packet.get('from'))
@@ -220,10 +384,19 @@ class MeshtasticReceiver:
         decoded = packet.get('decoded', {})
         position = decoded.get('position', {})
         
+        lat = position.get('latitude')
+        if lat is None and position.get('latitudeI'):
+            lat = position.get('latitudeI') / 1e7
+        lon = position.get('longitude')
+        if lon is None and position.get('longitudeI'):
+            lon = position.get('longitudeI') / 1e7
+        
         message.update({
-            'latitude': position.get('latitude') or position.get('latitudeI', 0) / 1e7 if position.get('latitudeI') else None,
-            'longitude': position.get('longitude') or position.get('longitudeI', 0) / 1e7 if position.get('longitudeI') else None,
+            'latitude': lat,
+            'longitude': lon,
             'altitude': position.get('altitude'),
+            'altitude_hae': position.get('altitudeHae'),
+            'altitude_geoidal_separation': position.get('altitudeGeoidalSeparation'),
             'ground_speed': position.get('groundSpeed'),
             'ground_track': position.get('groundTrack'),
             'precision_bits': position.get('precisionBits'),
@@ -232,7 +405,10 @@ class MeshtasticReceiver:
             'hdop': position.get('HDOP'),
             'vdop': position.get('VDOP'),
             'gps_timestamp': position.get('time'),
-            'position_source': position.get('locSource', 'unknown')
+            'fix_quality': position.get('fixQuality'),
+            'fix_type': position.get('fixType'),
+            'position_source': position.get('locSource', 'unknown'),
+            'seq_number': position.get('seqNumber'),
         })
         
         del message['raw_packet']

@@ -2,7 +2,7 @@
     "account": "YOUR_ACCOUNT_IDENTIFIER",
     "user": "YOUR_USERNAME",
     "role": "ACCOUNTADMIN",
-    "private_key_file": "rsa_key.p8",
+    "pat": "YOUR_PROGRAMMATIC_ACCESS_TOKEN",
     "database": "DEMO",
     "schema": "DEMO",
     "table": "MESHTASTIC_DATA",

@@ -1,139 +1,75 @@
-# Meshtastic to Snowflake Streaming Pipeline
+# Meshtastic Mesh Network Streamer for Snowflake
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![UV](https://img.shields.io/badge/uv-package%20manager-blueviolet)](https://github.com/astral-sh/uv)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+A Python-based data pipeline that streams real-time data from Meshtastic LoRa mesh network devices to Snowflake using Snowpipe Streaming v2 High-Speed REST API.
 
-Stream data from Meshtastic mesh network devices (like the SenseCAP Card Tracker T1000-E) to Snowflake using Snowpipe Streaming v2 High-Speed REST API.
+## Overview
 
-## Features
+This project provides a complete solution for capturing IoT sensor data from Meshtastic-compatible devices (like the SenseCAP Card Tracker T1000-E) and streaming it to Snowflake for real-time analytics and visualization.
 
-- 📡 Real-time streaming of Meshtastic packets to Snowflake
-- 🔌 Support for Serial, TCP, and BLE connections to Meshtastic devices
-- 🔐 JWT or PAT authentication with Snowflake
-- 📦 Batched inserts for efficiency
-- 🗺️ Position, telemetry, and text message parsing
-- 📊 Pre-built Snowflake views, Streamlit dashboard, and Semantic View
-- 🧪 Comprehensive test suite
+### Key Features
 
-## Quick Start with UV
+- **Real-time Streaming**: Uses Snowpipe Streaming v2 REST API for high-performance data ingestion
+- **Multi-Connection Support**: BLE (Bluetooth), Serial, and TCP connections
+- **Auto-Discovery**: Automatically scans for available Meshtastic devices
+- **Comprehensive Data Capture**: GPS, telemetry, environmental sensors, and mesh messages
+- **Interactive Dashboard**: Streamlit-based visualization with live maps
+- **Clean Shutdown**: Graceful Ctrl+C handling with data flush
 
-[UV](https://github.com/astral-sh/uv) is a fast Python package manager. Install it first:
+## Architecture
 
-```bash
-# Install UV (macOS/Linux)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Or with Homebrew
-brew install uv
-
-# Or with pip
-pip install uv
+```
+┌─────────────────┐      ┌──────────────────┐      ┌─────────────────┐
+│   Meshtastic    │      │     Python       │      │    Snowflake    │
+│   T1000-E       │─────▶│    Streamer      │─────▶│   Snowpipe v2   │
+│   (BLE/Serial)  │      │                  │      │   REST API      │
+└─────────────────┘      └──────────────────┘      └─────────────────┘
+         │                        │                        │
+         │                        │                        ▼
+    GPS/Sensors           Message Queue            MESHTASTIC_DATA
+    Position              Batch Processing              Table
+    Telemetry             JSON Serialization            │
+    Environment                                         ▼
+                                                  ┌─────────────────┐
+                                                  │   Streamlit     │
+                                                  │   Dashboard     │
+                                                  └─────────────────┘
 ```
 
-### 1. Setup Project
+## Supported Hardware
+
+### Primary Device: SenseCAP Card Tracker T1000-E
+- **GPS**: Latitude, longitude, altitude, speed, heading, satellites, DOP values
+- **Device Telemetry**: Battery level, voltage, uptime
+- **Environmental Sensors**: Temperature, humidity, barometric pressure
+- **Connectivity**: BLE (Bluetooth Low Energy), Serial USB
+
+### Other Compatible Devices
+- Heltec LoRa 32
+- LILYGO T-Beam
+- RAK WisBlock
+- Any Meshtastic-compatible device
+
+## Installation
+
+### Prerequisites
+
+- Python 3.9+
+- Snowflake account with Snowpipe Streaming enabled
+- Meshtastic device with firmware 2.0+
+- macOS/Linux (for BLE support)
+
+### Setup
 
 ```bash
+# Clone or navigate to project directory
 cd meshtastic
 
-# Create virtual environment and install dependencies
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-# Install core dependencies
-uv pip install -e .
-
-# Install with all extras (dev, streamlit, notebook)
-uv pip install -e ".[all]"
-```
-
-### 2. Generate RSA Keys for Snowflake Auth
-
-```bash
-openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
-openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
-
-# Get the formatted public key for Snowflake
-PUBK=$(cat ./rsa_key.pub | grep -v KEY- | tr -d '\012')
-echo "ALTER USER YOUR_USER SET RSA_PUBLIC_KEY='$PUBK';"
-```
-
-### 3. Configure Snowflake
-
-```bash
-cp snowflake_config.json.template snowflake_config.json
-# Edit snowflake_config.json with your credentials
-```
-
-Run the DDL in Snowflake:
-```sql
--- In Snowsight or via snow CLI
--- Creates table, pipe, and views
-SOURCE snowflake_ddl.sql;
-
--- Create semantic view for Cortex Analyst
-SOURCE semantic_view.sql;
-```
-
-### 4. Test Device Connection
-
-```bash
-# Auto-detect serial device
-python test_sensecap.py
-
-# Specific port
-python test_sensecap.py -p /dev/ttyUSB0
-
-# TCP/WiFi connection
-python test_sensecap.py -t tcp -H 192.168.1.100
-
-# Bluetooth (BLE) connections
-python test_sensecap.py --scan-ble                    # Scan for BLE devices
-python test_sensecap.py -t ble                        # BLE with auto-detect
-python test_sensecap.py -t ble -p AA:BB:CC:DD:EE:FF   # BLE with MAC address
-
-# Wait for environmental data (temperature, humidity)
-python test_sensecap.py -w 60 -o readings.json        # Wait 60s for telemetry
-python test_sensecap.py -t ble -w 120 -o data.json    # BLE + wait + export
-```
-
-### 5. Run the Streamer
-
-```bash
-python meshtastic_snowflake_streamer.py
-
-# Or with custom config
-MESHTASTIC_CONFIG=/path/to/config.json python meshtastic_snowflake_streamer.py
-```
-
-## Project Structure
-
-```
-meshtastic/
-├── pyproject.toml                    # UV/pip project config
-├── snowflake_config.json.template    # Config template
-├── .gitignore                        # Git ignore patterns
-│
-├── # Core Modules
-├── meshtastic_snowflake_streamer.py  # Main streaming application
-├── meshtastic_interface.py           # Meshtastic device connection
-├── snowpipe_streaming_client.py      # Snowpipe Streaming v2 REST API
-├── snowflake_jwt_auth.py             # JWT/PAT authentication
-│
-├── # Testing & Tools
-├── test_sensecap.py                  # SenseCAP device tester
-├── tests/                            # pytest test suite
-│   ├── __init__.py
-│   └── test_meshtastic_streaming.py
-│
-├── # Snowflake Assets
-├── snowflake_ddl.sql                 # Table, pipe, views DDL
-├── semantic_view.sql                 # Cortex Analyst semantic view
-├── EXAMPLE_PROMPTS.md                # 50 example prompts for semantic view
-│
-├── # Analytics & Visualization
-├── streamlit_app.py                  # Streamlit dashboard for Snowflake
-└── meshtastic_analysis.ipynb         # Jupyter notebook for analysis
+# Install dependencies
+pip install meshtastic bleak pyserial requests snowflake-connector-python streamlit plotly pandas
 ```
 
 ## Configuration
@@ -144,185 +80,340 @@ meshtastic/
 {
     "account": "YOUR_ACCOUNT",
     "user": "YOUR_USER",
-    "role": "ACCOUNTADMIN",
-    "private_key_file": "rsa_key.p8",
+    "role": "YOUR_ROLE",
+    "warehouse": "YOUR_WAREHOUSE",
+    "pat": "YOUR_PAT_TOKEN",
     "database": "DEMO",
     "schema": "DEMO",
     "table": "MESHTASTIC_DATA",
+    "pipe": "MESHTASTIC_STREAM_PIPE",
+    "channel_name": "MESH_CHNL",
     "batch_size": 10,
     "flush_interval_seconds": 5,
     "meshtastic": {
-        "connection_type": "serial",
+        "connection_type": "auto",
         "device_path": null,
+        "ble_address": "YOUR_BLE_ADDRESS",
         "hostname": null
     }
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `account` | Snowflake account identifier (e.g., `xy12345`) |
-| `user` | Snowflake username |
-| `role` | Role for authentication |
-| `private_key_file` | Path to RSA private key (JWT auth) |
-| `pat` | Programmatic Access Token (alternative to JWT) |
-| `database` | Target database |
-| `schema` | Target schema |
-| `table` | Target table name |
-| `batch_size` | Messages per batch (default: 10) |
-| `flush_interval_seconds` | Max seconds between flushes |
-| `meshtastic.connection_type` | `serial`, `tcp`, or `ble` |
-| `meshtastic.device_path` | Serial port or BLE MAC address |
-| `meshtastic.hostname` | TCP hostname for WiFi connection |
+### Connection Types
 
-## Data Model
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `auto` | Auto-detect best available | Recommended default |
+| `serial` | USB serial connection | Most reliable |
+| `ble` | Bluetooth Low Energy | Wireless, no cable |
+| `tcp` | Network connection | Remote devices |
 
-### MESHTASTIC_DATA Table
+## Snowflake Setup
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `ingested_at` | TIMESTAMP_TZ | When data was ingested |
-| `packet_type` | VARCHAR | position, telemetry, text, raw |
-| `from_id` | VARCHAR | Source node ID (!xxxxxxxx) |
-| `to_id` | VARCHAR | Destination (^all = broadcast) |
-| `rx_snr` | FLOAT | Signal-to-noise ratio (dB) |
-| `rx_rssi` | FLOAT | Signal strength (dBm) |
-| `latitude` | FLOAT | GPS latitude |
-| `longitude` | FLOAT | GPS longitude |
-| `altitude` | FLOAT | GPS altitude (meters) |
-| `battery_level` | NUMBER | Battery % (0-100) |
-| `voltage` | FLOAT | Battery voltage |
-| `temperature` | FLOAT | Temperature (°C) |
-| `relative_humidity` | FLOAT | Humidity (%) |
-| `barometric_pressure` | FLOAT | Pressure (hPa) |
-| `text_message` | VARCHAR | Chat message content |
-| `raw_packet` | VARIANT | Full packet JSON |
-
-### Pre-built Views
-
-- `MESHTASTIC_POSITIONS` - GPS position tracks
-- `MESHTASTIC_TELEMETRY` - Device health metrics
-- `MESHTASTIC_MESSAGES` - Text chat messages
-- `MESHTASTIC_ACTIVE_NODES` - Node summary with last position
-- `MESHTASTIC_HOURLY_STATS` - Hourly traffic aggregates
-
-### Semantic View for Cortex Analyst
+### 1. Create the Target Table
 
 ```sql
--- Query with natural language
-SELECT * FROM TABLE(
-    SNOWFLAKE.CORTEX.COMPLETE(
-        'What is the average battery level across all nodes?',
-        DEMO.DEMO.MESHTASTIC_SEMANTIC_VIEW
-    )
+CREATE OR REPLACE TABLE DEMO.DEMO.MESHTASTIC_DATA (
+    -- Metadata
+    ingested_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+    packet_type STRING,
+    
+    -- Source/Destination
+    from_id STRING,
+    from_num NUMBER,
+    to_id STRING,
+    to_num NUMBER,
+    channel NUMBER,
+    
+    -- Signal Quality
+    rx_snr FLOAT,
+    rx_rssi FLOAT,
+    hop_limit NUMBER,
+    hop_start NUMBER,
+    
+    -- GPS Position
+    latitude FLOAT,
+    longitude FLOAT,
+    altitude NUMBER,
+    altitude_hae NUMBER,
+    altitude_geoidal_separation NUMBER,
+    ground_speed NUMBER,
+    ground_track NUMBER,
+    precision_bits NUMBER,
+    sats_in_view NUMBER,
+    pdop NUMBER,
+    hdop NUMBER,
+    vdop NUMBER,
+    gps_timestamp NUMBER,
+    fix_quality NUMBER,
+    fix_type NUMBER,
+    position_source STRING,
+    seq_number NUMBER,
+    
+    -- Text Messages
+    text_message STRING,
+    
+    -- Device Telemetry
+    battery_level NUMBER,
+    voltage FLOAT,
+    channel_utilization FLOAT,
+    air_util_tx FLOAT,
+    uptime_seconds NUMBER,
+    
+    -- Environmental Sensors
+    temperature FLOAT,
+    temperature_f FLOAT,
+    relative_humidity FLOAT,
+    barometric_pressure FLOAT,
+    gas_resistance FLOAT,
+    iaq NUMBER,
+    
+    -- Light Sensors
+    lux FLOAT,
+    white_lux FLOAT,
+    ir_lux FLOAT,
+    uv_lux FLOAT,
+    
+    -- Weather
+    wind_direction NUMBER,
+    wind_speed FLOAT,
+    wind_gust FLOAT,
+    
+    -- Other Sensors
+    weight FLOAT,
+    distance FLOAT,
+    
+    -- Air Quality
+    pm10_standard NUMBER,
+    pm25_standard NUMBER,
+    pm100_standard NUMBER,
+    pm10_environmental NUMBER,
+    pm25_environmental NUMBER,
+    pm100_environmental NUMBER,
+    co2 NUMBER,
+    
+    -- Power Monitoring
+    ch1_voltage FLOAT,
+    ch1_current FLOAT,
+    ch2_voltage FLOAT,
+    ch2_current FLOAT,
+    ch3_voltage FLOAT,
+    ch3_current FLOAT,
+    
+    -- Raw Data
+    raw_packet VARIANT
 );
 ```
 
-See `EXAMPLE_PROMPTS.md` for 50+ example queries.
+### 2. Create the Streaming Pipe
 
-## Running Tests
-
-```bash
-# Install dev dependencies
-uv pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# With coverage
-pytest --cov=. --cov-report=html
-
-# Run specific test
-pytest tests/test_meshtastic_streaming.py -v
+```sql
+CREATE OR REPLACE PIPE DEMO.DEMO.MESHTASTIC_STREAM_PIPE
+    AS COPY INTO DEMO.DEMO.MESHTASTIC_DATA
+    FROM (SELECT * FROM TABLE(DATA_SOURCE(TYPE => 'STREAMING')));
 ```
 
-## Streamlit Dashboard
+### 3. Create PAT Token
 
-Deploy to Snowflake:
-
-```bash
-# Upload to stage
-snow stage copy streamlit_app.py @DEMO.DEMO.STREAMLIT_STAGE
-
-# Create Streamlit app in Snowflake
-snow streamlit create meshtastic_dashboard \
-    --file @DEMO.DEMO.STREAMLIT_STAGE/streamlit_app.py
+```sql
+-- In Snowsight: Admin > Security > Programmatic Access Tokens
+-- Or via SQL:
+ALTER USER your_user SET PROGRAMMATIC_ACCESS_TOKEN = TRUE;
 ```
 
-Or run locally:
+## Usage
+
+### Start the Streamer
+
 ```bash
-uv pip install -e ".[streamlit]"
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run with auto-detection
+python meshtastic_snowflake_streamer.py
+
+# Or specify connection type
+# Edit snowflake_config.json: "connection_type": "serial"
+```
+
+### Expected Output
+
+```
+======================================================================
+MESHTASTIC-SNOWFLAKE STREAMER - SNOWPIPE STREAMING V2 MODE
+Using ONLY Snowpipe Streaming v2 REST API - NO SQL INSERTs
+======================================================================
+==================================================
+SCANNING FOR MESHTASTIC DEVICES
+==================================================
+Scanning for serial devices...
+Found serial device: /dev/cu.usbmodem13301 - T1000-E
+Scanning for Bluetooth devices (10.0s)...
+Found BLE device: Meshtastic_4b14 (93C61E0F-855D-AECB-05B1-3C5193B22964)
+Scan complete: 1 serial, 1 BLE devices found
+==================================================
+Connected via BLE: 93C61E0F-855D-AECB-05B1-3C5193B22964
+Position from !b9d44b14: lat=40.291533, lon=-74.527539, alt=44
+Telemetry from !b9d44b14: temp=29.5, battery=101%, voltage=3.92V
+Successfully appended 2 rows
+```
+
+### Stop the Streamer
+
+Press `Ctrl+C` for graceful shutdown:
+```
+Received signal 2, shutting down gracefully...
+Streaming worker stopped
+```
+
+## Dashboard
+
+### Run Locally
+
+```bash
+source .venv/bin/activate
 streamlit run streamlit_app.py
 ```
 
-## Architecture
+### Deploy to Snowflake (Streamlit in Snowflake)
+
+```sql
+-- Upload streamlit_app.py to a stage
+PUT file:///path/to/streamlit_app.py @DEMO.DEMO.STREAMLIT_STAGE AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+
+-- Create Streamlit app
+CREATE OR REPLACE STREAMLIT DEMO.DEMO.MESHTASTIC_DASHBOARD
+    ROOT_LOCATION = '@DEMO.DEMO.STREAMLIT_STAGE'
+    MAIN_FILE = 'streamlit_app.py'
+    QUERY_WAREHOUSE = 'COMPUTE_WH';
+```
+
+### Dashboard Features
+
+| Tab | Description |
+|-----|-------------|
+| **Live Map** | Interactive map with device locations and movement tracks |
+| **Device Status** | Battery levels, voltage, uptime, signal quality |
+| **Environmental** | Temperature, humidity, pressure charts |
+| **GPS Details** | Position accuracy, satellites, altitude profiles |
+| **Analytics** | Packet distribution, traffic patterns, node activity |
+| **Raw Data** | Browse and export raw packet data |
+
+## Data Captured
+
+### GPS Position (every 15 min default)
+| Field | Description |
+|-------|-------------|
+| latitude | Decimal degrees |
+| longitude | Decimal degrees |
+| altitude | Meters above sea level |
+| ground_speed | Meters per second |
+| ground_track | Heading in degrees |
+| sats_in_view | Number of GPS satellites |
+| pdop/hdop/vdop | Dilution of precision values |
+| gps_timestamp | Unix timestamp from GPS |
+
+### Device Telemetry (every 30 sec)
+| Field | Description |
+|-------|-------------|
+| battery_level | Percentage (0-100) |
+| voltage | Battery voltage |
+| uptime_seconds | Device uptime |
+| channel_utilization | LoRa channel usage % |
+| air_util_tx | Transmit air utilization |
+
+### Environmental (every 30 min default)
+| Field | Description |
+|-------|-------------|
+| temperature | Celsius |
+| relative_humidity | Percentage |
+| barometric_pressure | Pascals |
+
+## Project Structure
 
 ```
-┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
-│  Meshtastic Device  │     │   Python Streamer   │     │     Snowflake       │
-│  (SenseCAP T1000-E) │────▶│                     │────▶│                     │
-│                     │     │ • Serial/TCP/BLE    │     │ • Snowpipe Stream   │
-│  • GPS (AG3335)     │     │ • Packet parsing    │     │ • MESHTASTIC_DATA   │
-│  • LoRa (LR1110)    │     │ • Batch buffering   │     │ • Semantic View     │
-│  • Sensors          │     │ • JWT Auth          │     │ • Streamlit App     │
-└─────────────────────┘     └─────────────────────┘     └─────────────────────┘
+meshtastic/
+├── meshtastic_snowflake_streamer.py  # Main orchestrator
+├── meshtastic_interface.py           # Device connection & parsing
+├── snowpipe_streaming_client.py      # Snowpipe v2 REST client
+├── streamlit_app.py                  # Dashboard
+├── snowflake_config.json             # Configuration
+├── test_packet_parsing.py            # Unit tests
+└── README.md                         # This file
 ```
-
-## Supported Devices
-
-| Device | Radio | MCU | GPS | Notes |
-|--------|-------|-----|-----|-------|
-| SenseCAP T1000-E | LR1110 | nRF52840 | AG3335 | Credit card size tracker |
-| Heltec LoRa 32 | SX1262 | ESP32 | Optional | WiFi + BLE |
-| LILYGO T-Beam | SX1262 | ESP32 | NEO-6M | Built-in GPS |
-| RAK WisBlock | SX1262 | nRF52840 | Optional | Modular design |
 
 ## Troubleshooting
 
 ### BLE Connection Issues
 ```bash
-# First scan for devices
-python test_sensecap.py --scan-ble
-
-# Default BLE pairing PIN: 123456
-
-# macOS: Grant Bluetooth permissions in System Settings > Privacy & Security
-# Linux: May need bluez package: sudo apt install bluez
-# T1000-E: Press button to wake device before connecting
+# Scan for devices manually
+python -c "from meshtastic_interface import MeshtasticReceiver; r=MeshtasticReceiver(); print(r.scan_ble_devices())"
 ```
 
-### UV Issues
-```bash
-# Reinstall from scratch
-rm -rf .venv uv.lock
-uv venv
-uv pip install -e ".[all]"
+### No GPS Data
+- Ensure device is outdoors with clear sky view
+- Wait 1-2 minutes for cold start GPS fix
+- Check position broadcasting is enabled in device settings
+
+### Snowpipe Errors
+- Verify PAT token is valid and not expired
+- Check table schema matches expected columns
+- Ensure pipe is in RUNNING state: `SHOW PIPES`
+
+### Device in Boot Mode
+- T1000-E shows as "T1000-E-BOOT" when in bootloader
+- Press reset button or power cycle the device
+
+## API Reference
+
+### MeshtasticReceiver
+
+```python
+from meshtastic_interface import MeshtasticReceiver
+
+# Auto-detect and connect
+receiver = MeshtasticReceiver(connection_type='auto')
+receiver.connect()
+
+# Or specify connection
+receiver = MeshtasticReceiver(
+    connection_type='ble',
+    device_path='93C61E0F-855D-AECB-05B1-3C5193B22964'
+)
+
+# Scan for devices
+serial_devices = receiver.scan_serial_devices()
+ble_devices = receiver.scan_ble_devices()
+all_devices = receiver.scan_all_devices()
 ```
 
-### JWT Authentication Failed
-1. Verify public key: `DESCRIBE USER your_user;`
-2. Check key format matches Snowflake requirements
-3. Try PAT authentication instead (simpler)
+### SnowpipeStreamingClient
 
-### No Messages Received
-1. Ensure device is in range of other mesh nodes
-2. Check serial port permissions: `sudo chmod 666 /dev/ttyUSB0`
-3. Verify Meshtastic firmware is installed
-4. Double-press button on T1000-E to force position update
+```python
+from snowpipe_streaming_client import SnowpipeStreamingClient
 
-### Connection Timeout
-1. Check network allows outbound to Snowflake
-2. Verify account identifier format
-3. Test: `curl -I https://YOUR_ACCOUNT.snowflakecomputing.com`
+client = SnowpipeStreamingClient('snowflake_config.json')
+client.discover_ingest_host()
+client.open_channel()
+
+rows = [{'packet_type': 'test', 'from_id': '!test'}]
+client.insert_rows(rows)
+
+client.close_channel()
+```
 
 ## License
 
-Apache 2.0
+MIT License - See LICENSE file for details.
 
-## Resources
+## Contributing
 
-- [Meshtastic Python API](https://python.meshtastic.org/)
-- [SenseCAP T1000-E Documentation](https://wiki.seeedstudio.com/sensecap_t1000_e/)
-- [Snowpipe Streaming v2 REST API](https://docs.snowflake.com/en/user-guide/snowpipe-streaming/snowpipe-streaming-high-performance-rest-api)
-- [Snowflake Cortex Analyst](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-analyst)
-- [Seeed Sense Cap T1000E Meshtastic Device](https://wiki.seeedstudio.com/sensecap_t1000_e/)
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
+
+## Support
+
+- Meshtastic Documentation: https://meshtastic.org/docs/
+- Snowpipe Streaming: https://docs.snowflake.com/en/user-guide/data-load-snowpipe-streaming-overview
+- SenseCAP T1000-E: https://wiki.seeedstudio.com/sensecap_t1000_e/
