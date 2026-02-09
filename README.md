@@ -297,8 +297,101 @@ CREATE OR REPLACE STREAMLIT DEMO.DEMO.MESHTASTIC_DASHBOARD
 | **Environmental** | Temperature, humidity, pressure charts |
 | **GPS Details** | Position accuracy, satellites, altitude profiles |
 | **Analytics** | Packet distribution, traffic patterns, node activity |
+| **AI Analysis** | Cortex AI-powered insights, sentiment, classification |
 | **Raw Data** | Browse and export raw packet data |
 | **Slack** | Send manual alerts and device status to Slack |
+
+## Cortex AI Analysis
+
+The dashboard includes AI-powered analysis using Snowflake Cortex AI SQL functions.
+
+### Available AI Features
+
+| Feature | Function | Description |
+|---------|----------|-------------|
+| **Sentiment Analysis** | `SNOWFLAKE.CORTEX.SENTIMENT` | Analyze sentiment of text messages (-1 to 1) |
+| **AI Insights** | `SNOWFLAKE.CORTEX.COMPLETE` | Generate device health and network reports |
+| **Classification** | `SNOWFLAKE.CORTEX.CLASSIFY_TEXT` | Classify battery/signal status into categories |
+| **Summarization** | `SNOWFLAKE.CORTEX.SUMMARIZE` | Generate network activity summaries |
+| **Custom Queries** | `SNOWFLAKE.CORTEX.COMPLETE` | Ask natural language questions about data |
+
+### AI Analysis Tab Features
+
+1. **Text Message Analysis**: Analyze sentiment of mesh network messages
+2. **AI-Powered Insights**: Generate health summaries, network reports, location analysis
+3. **Device Classification**: Classify battery and signal quality into human-readable categories
+4. **Network Summarization**: AI-generated summaries of recent network activity
+5. **Custom AI Queries**: Ask questions about your mesh network data in natural language
+
+### Configure Cortex AI in `snowflake_config.json`
+
+```json
+{
+    "cortex_ai": {
+        "enabled": true,
+        "model": "mistral-large2",
+        "analyze_text_messages": true,
+        "generate_insights": true,
+        "sentiment_analysis": true,
+        "alert_on_anomalies": false
+    }
+}
+```
+
+### Supported Models
+
+- `mistral-large2` - Best for complex analysis (recommended)
+- `llama3.1-70b` - Good balance of speed and quality
+- `llama3.1-8b` - Fastest, for simple tasks
+
+## Semantic View
+
+A semantic view is provided for natural language queries via Cortex Analyst.
+
+### Create Semantic View
+
+```sql
+-- Run the SQL in semantic_view.sql
+USE ROLE ACCOUNTADMIN;
+USE DATABASE DEMO;
+USE SCHEMA DEMO;
+
+CREATE OR REPLACE SEMANTIC VIEW MESHTASTIC_SEMANTIC_VIEW
+  TABLES (
+    mesh AS DEMO.DEMO.MESHTASTIC_DATA PRIMARY KEY (ingested_at, from_id)
+  )
+  FACTS (
+    mesh.rx_snr AS rx_snr COMMENT = 'Signal-to-noise ratio in dB',
+    mesh.battery_level AS battery_level COMMENT = 'Battery level percentage 0-100',
+    mesh.temperature AS temperature COMMENT = 'Temperature in Celsius',
+    -- ... additional facts
+  )
+  DIMENSIONS (
+    mesh.packet_type AS packet_type COMMENT = 'Type of packet: position, telemetry, text',
+    mesh.from_id AS from_id COMMENT = 'Source node ID',
+    -- ... additional dimensions
+  )
+  METRICS (
+    mesh.total_packets AS COUNT(*) COMMENT = 'Total number of packets',
+    mesh.avg_battery AS AVG(mesh.battery_level) COMMENT = 'Average battery level',
+    -- ... additional metrics
+  )
+  COMMENT = 'Meshtastic mesh network data semantic model';
+```
+
+### Query with Natural Language
+
+Once created, use Cortex Analyst to query the semantic view:
+
+```sql
+-- Example: Ask natural language questions
+SELECT * FROM TABLE(
+  SNOWFLAKE.CORTEX.ANALYST(
+    'DEMO.DEMO.MESHTASTIC_SEMANTIC_VIEW',
+    'What is the average battery level by device?'
+  )
+);
+```
 
 ## Slack Integration
 
