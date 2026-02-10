@@ -944,65 +944,87 @@ def main():
             if st.button("Generate AI Insight", type="primary"):
                 try:
                     if insight_type == "Device Health Summary":
-                        ai_query = f"""
-                        SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                            'mistral-large2',
-                            CONCAT(
-                                'Analyze this IoT device telemetry data and provide a brief health assessment. ',
-                                'Data: ',
-                                (SELECT LISTAGG(
-                                    CONCAT('Device:', from_id, ' Battery:', battery_level, '% Temp:', temperature, 'C Uptime:', uptime_seconds, 's'),
-                                    '; '
-                                ) FROM (
-                                    SELECT from_id, MAX(battery_level) as battery_level, 
-                                           MAX(temperature) as temperature, MAX(uptime_seconds) as uptime_seconds
-                                    FROM DEMO.DEMO.MESHTASTIC_DATA
-                                    WHERE ingested_at >= {time_filter}
-                                    GROUP BY from_id
-                                    LIMIT 5
-                                ))
-                            )
-                        ) as insight
+                        data_query = f"""
+                        SELECT LISTAGG(
+                            'Device:' || from_id || ' Battery:' || COALESCE(battery_level::STRING, 'N/A') || '% Temp:' || COALESCE(ROUND(temperature,1)::STRING, 'N/A') || 'C Uptime:' || COALESCE(uptime_seconds::STRING, 'N/A') || 's',
+                            '; '
+                        ) as data_summary
+                        FROM (
+                            SELECT from_id, MAX(battery_level) as battery_level, 
+                                   MAX(temperature) as temperature, MAX(uptime_seconds) as uptime_seconds
+                            FROM DEMO.DEMO.MESHTASTIC_DATA
+                            WHERE ingested_at >= {time_filter}
+                            GROUP BY from_id
+                            LIMIT 5
+                        )
                         """
+                        data_result = run_query(data_query)
+                        if not data_result.empty and data_result['DATA_SUMMARY'].iloc[0]:
+                            data_str = data_result['DATA_SUMMARY'].iloc[0]
+                            ai_query = f"""
+                            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                                'mistral-large2',
+                                'Analyze this IoT device telemetry data and provide a brief health assessment in 2-3 sentences. Data: {data_str}'
+                            ) as insight
+                            """
+                        else:
+                            st.warning("No device data available for analysis")
+                            ai_query = None
+                            
                     elif insight_type == "Network Status Report":
-                        ai_query = f"""
-                        SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                            'mistral-large2',
-                            CONCAT(
-                                'Analyze this LoRa mesh network data and provide a brief network health report. ',
-                                'Include signal quality assessment. Data: ',
-                                (SELECT CONCAT(
-                                    'Total packets: ', COUNT(*), 
-                                    ', Unique nodes: ', COUNT(DISTINCT from_id),
-                                    ', Avg SNR: ', ROUND(AVG(rx_snr), 1), 'dB',
-                                    ', Avg RSSI: ', ROUND(AVG(rx_rssi), 1), 'dBm',
-                                    ', Position updates: ', SUM(CASE WHEN packet_type='position' THEN 1 ELSE 0 END),
-                                    ', Telemetry packets: ', SUM(CASE WHEN packet_type='telemetry' THEN 1 ELSE 0 END)
-                                ) FROM DEMO.DEMO.MESHTASTIC_DATA WHERE ingested_at >= {time_filter})
-                            )
-                        ) as insight
+                        data_query = f"""
+                        SELECT 
+                            'Total packets: ' || COUNT(*) || 
+                            ', Unique nodes: ' || COUNT(DISTINCT from_id) ||
+                            ', Avg SNR: ' || COALESCE(ROUND(AVG(rx_snr), 1)::STRING, 'N/A') || 'dB' ||
+                            ', Avg RSSI: ' || COALESCE(ROUND(AVG(rx_rssi), 1)::STRING, 'N/A') || 'dBm' ||
+                            ', Position updates: ' || SUM(CASE WHEN packet_type='position' THEN 1 ELSE 0 END) ||
+                            ', Telemetry packets: ' || SUM(CASE WHEN packet_type='telemetry' THEN 1 ELSE 0 END)
+                            as data_summary
+                        FROM DEMO.DEMO.MESHTASTIC_DATA 
+                        WHERE ingested_at >= {time_filter}
                         """
+                        data_result = run_query(data_query)
+                        if not data_result.empty and data_result['DATA_SUMMARY'].iloc[0]:
+                            data_str = data_result['DATA_SUMMARY'].iloc[0]
+                            ai_query = f"""
+                            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                                'mistral-large2',
+                                'Analyze this LoRa mesh network data and provide a brief network health report in 2-3 sentences. Include signal quality assessment. Data: {data_str}'
+                            ) as insight
+                            """
+                        else:
+                            st.warning("No network data available for analysis")
+                            ai_query = None
+                            
                     elif insight_type == "Location Analysis":
-                        ai_query = f"""
-                        SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                            'mistral-large2',
-                            CONCAT(
-                                'Analyze GPS tracking data for IoT devices and summarize movement patterns. Data: ',
-                                (SELECT LISTAGG(
-                                    CONCAT('Lat:', ROUND(latitude, 4), ' Lon:', ROUND(longitude, 4), ' Alt:', altitude, 'm Speed:', ground_speed, 'm/s'),
-                                    '; '
-                                ) FROM (
-                                    SELECT latitude, longitude, altitude, ground_speed
-                                    FROM DEMO.DEMO.MESHTASTIC_DATA
-                                    WHERE packet_type = 'position' 
-                                      AND latitude IS NOT NULL
-                                      AND ingested_at >= {time_filter}
-                                    ORDER BY ingested_at DESC
-                                    LIMIT 10
-                                ))
-                            )
-                        ) as insight
+                        data_query = f"""
+                        SELECT LISTAGG(
+                            'Lat:' || ROUND(latitude, 4)::STRING || ' Lon:' || ROUND(longitude, 4)::STRING || ' Alt:' || COALESCE(altitude::STRING, 'N/A') || 'm',
+                            '; '
+                        ) as data_summary
+                        FROM (
+                            SELECT latitude, longitude, altitude
+                            FROM DEMO.DEMO.MESHTASTIC_DATA
+                            WHERE packet_type = 'position' 
+                              AND latitude IS NOT NULL
+                              AND ingested_at >= {time_filter}
+                            ORDER BY ingested_at DESC
+                            LIMIT 10
+                        )
                         """
+                        data_result = run_query(data_query)
+                        if not data_result.empty and data_result['DATA_SUMMARY'].iloc[0]:
+                            data_str = data_result['DATA_SUMMARY'].iloc[0]
+                            ai_query = f"""
+                            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                                'mistral-large2',
+                                'Analyze GPS tracking data for IoT devices and summarize movement patterns in 2-3 sentences. Data: {data_str}'
+                            ) as insight
+                            """
+                        else:
+                            st.warning("No GPS position data available for analysis")
+                            ai_query = None
                     else:
                         ai_query = None
                     
@@ -1024,86 +1046,104 @@ def main():
         with col1:
             st.markdown("**Classify Device Status:**")
             try:
-                classify_query = f"""
+                battery_query = f"""
                 SELECT 
                     from_id,
-                    battery_level,
-                    SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
-                        CONCAT('Battery level is ', battery_level, ' percent'),
-                        ['Critical - needs immediate attention', 'Low - charge soon', 'Good - normal operation', 'Excellent - fully charged']
-                    ):label::STRING as status_class
+                    MAX(battery_level) as battery_level
                 FROM DEMO.DEMO.MESHTASTIC_DATA
                 WHERE battery_level IS NOT NULL
                   AND ingested_at >= {time_filter}
-                GROUP BY from_id, battery_level
+                GROUP BY from_id
                 ORDER BY battery_level
                 LIMIT 5
                 """
-                classify_df = run_query(classify_query)
-                if not classify_df.empty:
-                    for _, row in classify_df.iterrows():
-                        status = row['STATUS_CLASS']
-                        icon = "🔴" if "Critical" in status else ("🟡" if "Low" in status else ("🟢" if "Good" in status else "🔵"))
-                        st.markdown(f"{icon} **{row['FROM_ID']}**: {row['BATTERY_LEVEL']}% - {status}")
+                battery_df = run_query(battery_query)
+                if not battery_df.empty:
+                    for _, row in battery_df.iterrows():
+                        bat = row['BATTERY_LEVEL']
+                        if bat <= 10:
+                            status, icon = "Critical - needs immediate attention", "🔴"
+                        elif bat <= 20:
+                            status, icon = "Low - charge soon", "🟡"
+                        elif bat <= 80:
+                            status, icon = "Good - normal operation", "🟢"
+                        else:
+                            status, icon = "Excellent - fully charged", "🔵"
+                        st.markdown(f"{icon} **{row['FROM_ID']}**: {bat}% - {status}")
+                else:
+                    st.info("No battery data available")
             except Exception as e:
-                st.info(f"Classification requires Cortex AI: {e}")
+                st.info(f"Error loading battery data: {e}")
         
         with col2:
             st.markdown("**Signal Quality Classification:**")
             try:
-                signal_classify_query = f"""
+                signal_query = f"""
                 SELECT 
                     from_id,
-                    ROUND(AVG(rx_snr), 1) as avg_snr,
-                    SNOWFLAKE.CORTEX.CLASSIFY_TEXT(
-                        CONCAT('Signal SNR is ', ROUND(AVG(rx_snr), 1), ' dB'),
-                        ['Poor signal - may lose connection', 'Weak signal - intermittent', 'Good signal - stable', 'Excellent signal - strong']
-                    ):label::STRING as signal_class
+                    ROUND(AVG(rx_snr), 1) as avg_snr
                 FROM DEMO.DEMO.MESHTASTIC_DATA
                 WHERE rx_snr IS NOT NULL
                   AND ingested_at >= {time_filter}
                 GROUP BY from_id
                 LIMIT 5
                 """
-                signal_df = run_query(signal_classify_query)
+                signal_df = run_query(signal_query)
                 if not signal_df.empty:
                     for _, row in signal_df.iterrows():
-                        signal = row['SIGNAL_CLASS']
-                        icon = "📶" if "Excellent" in signal else ("📶" if "Good" in signal else ("📉" if "Weak" in signal else "❌"))
-                        st.markdown(f"{icon} **{row['FROM_ID']}**: {row['AVG_SNR']} dB - {signal}")
+                        snr = row['AVG_SNR']
+                        if snr is None or pd.isna(snr):
+                            continue
+                        if snr < -5:
+                            signal_status, icon = "Poor signal - may lose connection", "❌"
+                        elif snr < 0:
+                            signal_status, icon = "Weak signal - intermittent", "📉"
+                        elif snr < 10:
+                            signal_status, icon = "Good signal - stable", "📶"
+                        else:
+                            signal_status, icon = "Excellent signal - strong", "📶"
+                        st.markdown(f"{icon} **{row['FROM_ID']}**: {snr} dB - {signal_status}")
+                else:
+                    st.info("No signal data available")
             except Exception as e:
-                st.info(f"Classification requires Cortex AI: {e}")
+                st.info(f"Error loading signal data: {e}")
         
         st.divider()
         
         st.markdown("#### 📊 AI Data Summarization")
         if st.button("Generate Network Summary Report"):
             try:
-                summary_query = f"""
-                SELECT SNOWFLAKE.CORTEX.SUMMARIZE(
-                    (SELECT LISTAGG(
-                        CONCAT(
-                            'Packet from device ', from_id, 
-                            ' type:', packet_type,
-                            CASE WHEN battery_level IS NOT NULL THEN CONCAT(' battery:', battery_level, '%') ELSE '' END,
-                            CASE WHEN temperature IS NOT NULL THEN CONCAT(' temp:', ROUND(temperature,1), 'C') ELSE '' END,
-                            CASE WHEN latitude IS NOT NULL THEN CONCAT(' location:', ROUND(latitude,4), ',', ROUND(longitude,4)) ELSE '' END,
-                            CASE WHEN rx_snr IS NOT NULL THEN CONCAT(' SNR:', ROUND(rx_snr,1), 'dB') ELSE '' END
-                        ),
-                        '. '
-                    ) FROM (
-                        SELECT * FROM DEMO.DEMO.MESHTASTIC_DATA
-                        WHERE ingested_at >= {time_filter}
-                        ORDER BY ingested_at DESC
-                        LIMIT 50
-                    ))
-                ) as summary
+                data_query = f"""
+                SELECT LISTAGG(
+                    'Packet from device ' || from_id || 
+                    ' type:' || packet_type ||
+                    CASE WHEN battery_level IS NOT NULL THEN ' battery:' || battery_level || '%' ELSE '' END ||
+                    CASE WHEN temperature IS NOT NULL THEN ' temp:' || ROUND(temperature,1) || 'C' ELSE '' END ||
+                    CASE WHEN latitude IS NOT NULL THEN ' location:' || ROUND(latitude,4) || ',' || ROUND(longitude,4) ELSE '' END ||
+                    CASE WHEN rx_snr IS NOT NULL THEN ' SNR:' || ROUND(rx_snr,1) || 'dB' ELSE '' END,
+                    '. '
+                ) as data_text
+                FROM (
+                    SELECT * FROM DEMO.DEMO.MESHTASTIC_DATA
+                    WHERE ingested_at >= {time_filter}
+                    ORDER BY ingested_at DESC
+                    LIMIT 30
+                )
                 """
-                with st.spinner("Generating summary..."):
-                    summary_result = run_query(summary_query)
-                    if not summary_result.empty:
-                        st.success("**AI-Generated Summary:**")
-                        st.markdown(summary_result['SUMMARY'].iloc[0])
+                with st.spinner("Gathering data..."):
+                    data_result = run_query(data_query)
+                    if not data_result.empty and data_result['DATA_TEXT'].iloc[0]:
+                        data_text = data_result['DATA_TEXT'].iloc[0][:4000]
+                        summary_query = f"""
+                        SELECT SNOWFLAKE.CORTEX.SUMMARIZE('{data_text.replace("'", "''")}') as summary
+                        """
+                        with st.spinner("Generating AI summary..."):
+                            summary_result = run_query(summary_query)
+                            if not summary_result.empty:
+                                st.success("**AI-Generated Summary:**")
+                                st.markdown(summary_result['SUMMARY'].iloc[0])
+                    else:
+                        st.warning("No data available for summarization")
             except Exception as e:
                 st.error(f"Summary generation error: {e}")
         
@@ -1118,29 +1158,32 @@ def main():
         
         if st.button("Ask AI") and custom_prompt:
             try:
-                custom_ai_query = f"""
-                SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                    'mistral-large2',
-                    CONCAT(
-                        'You are analyzing IoT mesh network data from Meshtastic devices. ',
-                        'The data includes GPS positions, battery levels, temperature, humidity, and signal quality. ',
-                        'Based on this context, answer: {custom_prompt.replace("'", "''")} ',
-                        'Recent data summary: ',
-                        (SELECT CONCAT(
-                            'Devices: ', COUNT(DISTINCT from_id),
-                            ', Total packets: ', COUNT(*),
-                            ', Avg battery: ', ROUND(AVG(battery_level)),
-                            '%, Avg temp: ', ROUND(AVG(temperature), 1),
-                            'C, Avg SNR: ', ROUND(AVG(rx_snr), 1), 'dB'
-                        ) FROM DEMO.DEMO.MESHTASTIC_DATA WHERE ingested_at >= {time_filter})
-                    )
-                ) as response
+                stats_query = f"""
+                SELECT 
+                    COUNT(DISTINCT from_id) as devices,
+                    COUNT(*) as total_packets,
+                    ROUND(AVG(battery_level)) as avg_battery,
+                    ROUND(AVG(temperature), 1) as avg_temp,
+                    ROUND(AVG(rx_snr), 1) as avg_snr
+                FROM DEMO.DEMO.MESHTASTIC_DATA 
+                WHERE ingested_at >= {time_filter}
                 """
-                with st.spinner("AI is thinking..."):
-                    response = run_query(custom_ai_query)
-                    if not response.empty:
-                        st.success("**AI Response:**")
-                        st.markdown(response['RESPONSE'].iloc[0])
+                stats_result = run_query(stats_query)
+                if not stats_result.empty:
+                    row = stats_result.iloc[0]
+                    context = f"Devices: {row['DEVICES']}, Total packets: {row['TOTAL_PACKETS']}, Avg battery: {row['AVG_BATTERY']}%, Avg temp: {row['AVG_TEMP']}C, Avg SNR: {row['AVG_SNR']}dB"
+                    safe_prompt = custom_prompt.replace("'", "''")
+                    custom_ai_query = f"""
+                    SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                        'mistral-large2',
+                        'You are analyzing IoT mesh network data from Meshtastic devices. The data includes GPS positions, battery levels, temperature, humidity, and signal quality. Recent data summary: {context}. Based on this context, answer in 2-3 sentences: {safe_prompt}'
+                    ) as response
+                    """
+                    with st.spinner("AI is thinking..."):
+                        response = run_query(custom_ai_query)
+                        if not response.empty:
+                            st.success("**AI Response:**")
+                            st.markdown(response['RESPONSE'].iloc[0])
             except Exception as e:
                 st.error(f"AI query error: {e}")
         

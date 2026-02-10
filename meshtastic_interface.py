@@ -15,12 +15,14 @@ class MeshtasticReceiver:
         connection_type: str = 'auto',
         device_path: str = None,
         hostname: str = None,
+        ble_address: str = None,
         on_message_callback: Callable = None,
         ble_scan_timeout: float = 10.0
     ):
         self.connection_type = connection_type
         self.device_path = device_path
         self.hostname = hostname
+        self.ble_address = ble_address
         self.on_message_callback = on_message_callback
         self.ble_scan_timeout = ble_scan_timeout
         self.interface = None
@@ -41,6 +43,7 @@ class MeshtasticReceiver:
             for port in ports:
                 desc = (port.description or "").lower()
                 mfr = (port.manufacturer or "").lower()
+                device = port.device.lower()
                 
                 if "boot" in desc:
                     logger.debug(f"Skipping bootloader device: {port.device}")
@@ -52,7 +55,9 @@ class MeshtasticReceiver:
                     "seeed", "heltec", "lilygo", "rak", "wisblock"
                 ])
                 
-                if is_meshtastic or ("usb" in desc.lower() and "billboard" not in desc.lower()):
+                is_usb_serial = "usbmodem" in device or "usbserial" in device or "wchusbserial" in device
+                
+                if is_meshtastic or is_usb_serial:
                     meshtastic_devices.append({
                         'port': port.device,
                         'description': port.description,
@@ -141,28 +146,64 @@ class MeshtasticReceiver:
             raise ValueError(f"Unknown connection type: {self.connection_type}")
     
     def _connect_auto(self):
-        """Auto-detect and connect to best available device"""
+        """Auto-detect and connect to best available device - BLE first, then serial"""
+        import meshtastic.serial_interface
+        
         devices = self.scan_all_devices()
         
-        if devices['serial']:
-            logger.info("Trying serial connection first (more reliable)...")
-            try:
-                self.device_path = devices['serial'][0]['port']
-                self._connect_serial()
-                return self
-            except Exception as e:
-                logger.warning(f"Serial connection failed: {e}")
-        
         if devices['ble']:
-            logger.info("Trying BLE connection...")
+            logger.info("Trying BLE connections first (preferred)...")
+            ble_4b14 = [d for d in devices['ble'] if '4b14' in (d.get('name') or '').lower() or '4b14' in d.get('address', '').lower()]
+            ble_others = [d for d in devices['ble'] if d not in ble_4b14]
+            ble_ordered = ble_4b14 + ble_others
+            
+            for dev in ble_ordered:
+                try:
+                    self.device_path = dev['address']
+                    logger.info(f"Trying BLE: {dev.get('name', 'Unknown')} ({self.device_path})")
+                    self._connect_ble()
+                    return self
+                except Exception as e:
+                    logger.warning(f"BLE connection to {dev['address']} failed: {e}")
+        
+        if self.ble_address:
+            logger.info(f"Trying known BLE address: {self.ble_address}")
             try:
-                self.device_path = devices['ble'][0]['address']
+                self.device_path = self.ble_address
                 self._connect_ble()
                 return self
             except Exception as e:
-                logger.warning(f"BLE connection failed: {e}")
+                logger.warning(f"Known BLE address failed: {e}")
         
-        raise ConnectionError("No Meshtastic devices found or all connections failed")
+        if devices['serial']:
+            logger.info("Falling back to serial connections...")
+            serial_4b14 = [d for d in devices['serial'] if '4b14' in (d.get('description') or '').lower()]
+            serial_others = [d for d in devices['serial'] if d not in serial_4b14]
+            serial_ordered = serial_4b14 + serial_others
+            
+            for dev in serial_ordered:
+                try:
+                    self.device_path = dev['port']
+                    logger.info(f"Trying serial port: {self.device_path}")
+                    self.interface = meshtastic.serial_interface.SerialInterface(devPath=self.device_path)
+                    self.connected_via = 'serial'
+                    logger.info(f"Connected via serial: {self.device_path}")
+                    self._setup_subscriptions()
+                    return self
+                except Exception as e:
+                    logger.warning(f"Serial connection to {dev['port']} failed: {e}")
+        
+        logger.info("Attempting meshtastic native auto-detection as last resort...")
+        try:
+            self.interface = meshtastic.serial_interface.SerialInterface()
+            self.connected_via = 'serial'
+            logger.info("Connected via serial: auto-detected by meshtastic")
+            self._setup_subscriptions()
+            return self
+        except Exception as e:
+            logger.warning(f"Native auto-detection failed: {e}")
+        
+        raise ConnectionError("No Meshtastic devices found or all connections failed. Make sure device is on and connected.")
     
     def _connect_serial(self):
         """Connect via serial port"""
@@ -222,22 +263,25 @@ class MeshtasticReceiver:
         """Connect via Bluetooth Low Energy"""
         import meshtastic.ble_interface
         
-        if not self.device_path:
+        ble_addr = self.device_path or self.ble_address
+        
+        if not ble_addr:
             logger.info("No BLE address specified, scanning for devices...")
             devices = self.scan_ble_devices()
             if devices:
-                self.device_path = devices[0]['address']
-                logger.info(f"Auto-selected: {devices[0].get('name')} ({self.device_path})")
+                ble_addr = devices[0]['address']
+                logger.info(f"Auto-selected: {devices[0].get('name')} ({ble_addr})")
             else:
                 raise ValueError(
                     "No BLE device address provided and none found via scan. "
                     "Tips: 1) Ensure device is on, 2) Specify address with device_path parameter"
                 )
         
-        logger.info(f"Connecting to BLE device: {self.device_path}")
-        self.interface = meshtastic.ble_interface.BLEInterface(address=self.device_path)
+        logger.info(f"Connecting to BLE device: {ble_addr}")
+        self.interface = meshtastic.ble_interface.BLEInterface(address=ble_addr)
+        self.device_path = ble_addr
         self.connected_via = 'ble'
-        logger.info(f"Connected via BLE: {self.device_path}")
+        logger.info(f"Connected via BLE: {ble_addr}")
         
         self._setup_subscriptions()
         return self
@@ -490,16 +534,26 @@ class MeshtasticReceiver:
         if not self.interface:
             return {}
         
-        node = self.interface.getNode('^local')
-        if not node:
+        try:
+            if hasattr(self.interface, 'localNode') and self.interface.localNode:
+                node = self.interface.localNode
+            elif hasattr(self.interface, 'getNode'):
+                node = self.interface.getNode('^local')
+            else:
+                return {}
+            
+            if not node:
+                return {}
+            
+            return {
+                'node_id': getattr(node, 'nodeId', None),
+                'node_num': getattr(node, 'nodeNum', None),
+                'local_config': str(getattr(node, 'localConfig', {})),
+                'module_config': str(getattr(node, 'moduleConfig', {}))
+            }
+        except Exception as e:
+            logger.warning(f"Could not get local node info: {e}")
             return {}
-        
-        return {
-            'node_id': getattr(node, 'nodeId', None),
-            'node_num': getattr(node, 'nodeNum', None),
-            'local_config': str(getattr(node, 'localConfig', {})),
-            'module_config': str(getattr(node, 'moduleConfig', {}))
-        }
     
     def get_all_nodes(self) -> List[Dict]:
         if not self.interface or not hasattr(self.interface, 'nodes'):

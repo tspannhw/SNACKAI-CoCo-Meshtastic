@@ -303,14 +303,16 @@ class MeshtasticSnowflakeStreamer:
     def connect_meshtastic(self):
         logger.info("Connecting to Meshtastic device...")
         
-        connection_type = self.meshtastic_config.get('connection_type', 'serial')
+        connection_type = self.meshtastic_config.get('connection_type', 'auto')
         device_path = self.meshtastic_config.get('device_path')
         hostname = self.meshtastic_config.get('hostname')
+        ble_address = self.meshtastic_config.get('ble_address')
         
         self.meshtastic_receiver = MeshtasticReceiver(
             connection_type=connection_type,
             device_path=device_path,
             hostname=hostname,
+            ble_address=ble_address,
             on_message_callback=self._on_meshtastic_message
         )
         
