@@ -127,16 +127,100 @@ class MeshtasticSnowflakeStreamer:
             lon = message.get('longitude')
             alt = message.get('altitude')
             if lat and lon:
-                alert = (
+                speed = message.get('ground_speed')
+                heading = message.get('ground_track')
+                pos_msg = (
                     f"📍 *Position Update*\n"
                     f"Device: `{device_id}`\n"
                     f"• Location: {lat:.6f}, {lon:.6f}\n"
-                    f"• Altitude: {alt}m\n"
+                    f"• Altitude: {alt or 'N/A'}m\n"
+                    f"• Speed: {speed or 'N/A'} m/s\n"
+                    f"• Heading: {heading or 'N/A'}°\n"
                     f"• Satellites: {message.get('sats_in_view', 'N/A')}\n"
+                    f"• Map: https://maps.google.com/?q={lat},{lon}\n"
                     f"• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 if self.slack_config.get('notify_position', False):
-                    self._send_slack_message(alert)
+                    self._send_slack_message(pos_msg)
+        
+        if pkt_type == 'telemetry':
+            self._send_telemetry_slack(message, device_id)
+        
+        if pkt_type == 'text':
+            text = message.get('text', '')
+            if text and self.slack_config.get('notify_text', True):
+                text_msg = (
+                    f"💬 *Text Message*\n"
+                    f"From: `{device_id}`\n"
+                    f"Message: {text}\n"
+                    f"• SNR: {message.get('rx_snr', 'N/A')} dB\n"
+                    f"• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                self._send_slack_message(text_msg)
+    
+    def _send_telemetry_slack(self, message: Dict, device_id: str):
+        """Send comprehensive telemetry data to Slack"""
+        if not self.slack_config.get('notify_telemetry', True):
+            return
+        
+        temp = message.get('temperature')
+        humidity = message.get('relative_humidity')
+        pressure = message.get('barometric_pressure')
+        battery = message.get('battery_level')
+        voltage = message.get('voltage')
+        
+        has_env = temp is not None or humidity is not None or pressure is not None
+        has_device = battery is not None or voltage is not None
+        
+        if has_env:
+            env_msg = f"🌡️ *Environmental Sensors*\nDevice: `{device_id}`\n"
+            if temp is not None:
+                env_msg += f"• Temperature: {temp:.1f}°C ({temp * 9/5 + 32:.1f}°F)\n"
+            if humidity is not None:
+                env_msg += f"• Humidity: {humidity:.1f}%\n"
+            if pressure is not None:
+                env_msg += f"• Pressure: {pressure:.1f} hPa\n"
+            
+            iaq = message.get('iaq')
+            gas = message.get('gas_resistance')
+            if iaq is not None:
+                env_msg += f"• Air Quality (IAQ): {iaq}\n"
+            if gas is not None:
+                env_msg += f"• Gas Resistance: {gas} Ω\n"
+            
+            env_msg += f"• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            self._send_slack_message(env_msg)
+        
+        if has_device and self.slack_config.get('notify_device_metrics', False):
+            dev_msg = f"📊 *Device Metrics*\nDevice: `{device_id}`\n"
+            if battery is not None:
+                icon = "🔴" if battery <= 10 else "🟡" if battery <= 20 else "🟢" if battery <= 80 else "🔵"
+                dev_msg += f"• Battery: {icon} {battery}%\n"
+            if voltage is not None:
+                dev_msg += f"• Voltage: {voltage:.2f}V\n"
+            
+            ch_util = message.get('channel_utilization')
+            air_util = message.get('air_util_tx')
+            uptime = message.get('uptime_seconds')
+            
+            if ch_util is not None:
+                dev_msg += f"• Channel Util: {ch_util:.1f}%\n"
+            if air_util is not None:
+                dev_msg += f"• Air Util TX: {air_util:.1f}%\n"
+            if uptime is not None:
+                hours = uptime // 3600
+                mins = (uptime % 3600) // 60
+                dev_msg += f"• Uptime: {hours}h {mins}m\n"
+            
+            snr = message.get('rx_snr')
+            rssi = message.get('rx_rssi')
+            if snr is not None:
+                dev_msg += f"• SNR: {snr} dB\n"
+            if rssi is not None:
+                dev_msg += f"• RSSI: {rssi} dBm\n"
+            
+            dev_msg += f"• Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            self._send_slack_message(dev_msg)
     
     def _prepare_row(self, message: Dict) -> Dict:
         def convert_value(v, depth=0):
