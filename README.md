@@ -537,6 +537,31 @@ client.insert_rows(rows)
 client.close_channel()
 ```
 
+## Slack Details
+
+````
+
+[12:14 PM] Device Metrics
+Device: !bb97d6ec
+• Battery:  101%
+• Voltage: 0.00V
+• Channel Util: 9.7%
+• Air Util TX: 3.8%
+• Uptime: 1056h 40m
+• SNR: -19.25 dB
+• RSSI: -108 dBm
+• Time: 2026-02-10 12:14:20[12:14 PM] Position Update
+Device: !ba663400
+• Location: 45.639270, -122.604749
+• Altitude: 93m
+• Speed: N/A m/s
+• Heading: N/A°
+• Satellites: None
+• Map: https://maps.google.com/?q=45.6392704,-122.6047488
+• Time: 2026-02-10 12:14:21
+
+````
+
 ## License
 
 MIT License - See LICENSE file for details.
