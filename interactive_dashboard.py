@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Meshtastic Live Dashboard - Interactive Tables
-Sub-second queries with auto-refresh every 60 seconds
+Sub-second queries with auto-refresh every 5 seconds
 ** Streamlit in Snowflake (SiS) Version **
 """
 import streamlit as st
@@ -9,6 +9,9 @@ import pandas as pd
 from datetime import datetime
 
 from snowflake.snowpark.context import get_active_session
+import time
+
+REFRESH_INTERVAL = 5
 
 st.set_page_config(
     page_title="Meshtastic Live",
@@ -563,3 +566,6 @@ col1, col2, col3 = st.columns([1, 1, 1])
 with col2:
     if st.button("🔄 Refresh Now", use_container_width=True):
         st.rerun()
+
+time.sleep(REFRESH_INTERVAL)
+st.rerun()
