@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "meshtastic": {
+      "command": "python",
+      "args": ["/Users/tspann/Downloads/code/coco/meshtastic/mcp_server.py"],
+      "env": {
+        "SNOWFLAKE_CONNECTION_NAME": "tspann1"
+      }
+    }
+  }
+}
