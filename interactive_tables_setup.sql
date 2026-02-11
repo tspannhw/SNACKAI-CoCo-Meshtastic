@@ -152,6 +152,10 @@ ALTER WAREHOUSE MESH_INTERACTIVE RESUME;
 -- Verify warehouse status
 SHOW WAREHOUSES LIKE 'MESH_INTERACTIVE';
 
+ALTER WAREHOUSE MESH_INTERACTIVE SUSPEND;
+
+-- https://docs.snowflake.com/en/user-guide/interactive
+
 -- ============================================================================
 -- ALTERNATIVE: Create Warehouse First, Then Add Tables
 -- ============================================================================

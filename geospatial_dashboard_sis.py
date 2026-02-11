@@ -201,21 +201,8 @@ with tab_map:
             lambda x: '🟢 Active' if x <= 5 else ('🟡 Recent' if x <= 30 else ('🟠 Stale' if x <= 60 else '🔴 Offline'))
         )
         
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "FROM_ID": st.column_config.TextColumn("Node ID", width="small"),
-                "LATITUDE": st.column_config.NumberColumn("Latitude", format="%.6f"),
-                "LONGITUDE": st.column_config.NumberColumn("Longitude", format="%.6f"),
-                "BATTERY_LEVEL": st.column_config.ProgressColumn("Battery %", min_value=0, max_value=100),
-                "SNR": st.column_config.NumberColumn("SNR (dB)", format="%.1f"),
-                "PACKET_COUNT": st.column_config.NumberColumn("Packets"),
-                "MINS_AGO": st.column_config.NumberColumn("Mins Ago"),
-                "Status": st.column_config.TextColumn("Status", width="small")
-            }
-        )
+        display_df.columns = ['Node ID', 'Latitude', 'Longitude', 'Battery %', 'SNR (dB)', 'Packets', 'Mins Ago', 'Status']
+        st.dataframe(display_df, use_container_width=True)
 
 with tab_network:
     st.subheader("🔗 Network Topology Analysis")
@@ -271,7 +258,7 @@ with tab_network:
         
         if connections_data:
             conn_table = pd.DataFrame(connections_data)
-            st.dataframe(conn_table, use_container_width=True, hide_index=True)
+            st.dataframe(conn_table, use_container_width=True)
         
         if st.button("🤖 Analyze Network Topology", key="topo_ai"):
             with st.spinner("AI analyzing network..."):
@@ -484,7 +471,7 @@ with tab_analytics:
         }
         
         stats_df = pd.DataFrame(list(geo_stats.items()), columns=['Metric', 'Value'])
-        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+        st.dataframe(stats_df, use_container_width=True)
     
     st.markdown("### 📈 Packet Activity Over Time")
     
@@ -573,21 +560,7 @@ with tab_live:
         
         st.markdown("### 📊 Interactive Data Table")
         
-        st.dataframe(
-            live_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Timestamp": st.column_config.DatetimeColumn("Timestamp", format="YYYY-MM-DD HH:mm:ss"),
-                "Node ID": st.column_config.TextColumn("Node ID", width="small"),
-                "Type": st.column_config.TextColumn("Type", width="small"),
-                "Battery %": st.column_config.ProgressColumn("Battery %", min_value=0, max_value=100, format="%d%%"),
-                "SNR (dB)": st.column_config.NumberColumn("SNR (dB)", format="%.2f"),
-                "Temp (°C)": st.column_config.NumberColumn("Temp (°C)", format="%.1f"),
-                "Message": st.column_config.TextColumn("Message", width="large")
-            },
-            height=500
-        )
+        st.dataframe(live_df, use_container_width=True, height=500)
         
         st.divider()
         
@@ -626,17 +599,7 @@ with tab_live:
             
             node_summary_df["Status"] = node_summary_df["Mins Ago"].apply(status_color)
             
-            st.dataframe(
-                node_summary_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Last Seen": st.column_config.DatetimeColumn("Last Seen", format="YYYY-MM-DD HH:mm:ss"),
-                    "Battery %": st.column_config.ProgressColumn("Battery %", min_value=0, max_value=100, format="%d%%"),
-                    "Status": st.column_config.TextColumn("Status", width="small")
-                },
-                height=300
-            )
+            st.dataframe(node_summary_df, use_container_width=True, height=300)
         
         st.divider()
         
@@ -680,12 +643,8 @@ if st.sidebar.button("🔄 Refresh Data"):
 if st.sidebar.button("📤 Export Node Data"):
     if not nodes_df.empty:
         csv = nodes_df.to_csv(index=False)
-        st.sidebar.download_button(
-            "Download CSV",
-            csv,
-            "mesh_nodes.csv",
-            "text/csv"
-        )
+        st.sidebar.text_area("CSV Data (copy below):", csv, height=200)
+        st.sidebar.info("Select all and copy (Ctrl+A, Ctrl+C)")
 
 st.sidebar.divider()
 st.sidebar.markdown(f"*Last updated: {datetime.now().strftime('%H:%M:%S')}*")
