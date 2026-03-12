@@ -39,6 +39,9 @@ st.set_page_config(
 
 CUSTOM_CSS = """
 <style>
+    html, body, [class*="st-"] {
+        font-size: 18px !important;
+    }
     .metric-card {
         background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
         border-radius: 10px;
@@ -46,9 +49,9 @@ CUSTOM_CSS = """
         color: white;
         margin: 5px 0;
     }
-    .status-online { color: #00ff00; }
-    .status-offline { color: #ff6b6b; }
-    .status-warning { color: #ffa500; }
+    .status-online { color: #00ff00; font-size: 20px; }
+    .status-offline { color: #ff6b6b; font-size: 20px; }
+    .status-warning { color: #ffa500; font-size: 20px; }
     .device-card {
         border: 1px solid #333;
         border-radius: 8px;
@@ -57,13 +60,24 @@ CUSTOM_CSS = """
         background: #1a1a2e;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 28px;
+        font-size: 36px !important;
     }
+    div[data-testid="stMetricLabel"] {
+        font-size: 18px !important;
+    }
+    .stMarkdown p, .stMarkdown li {
+        font-size: 18px !important;
+    }
+    h1 { font-size: 42px !important; }
+    h2 { font-size: 32px !important; }
+    h3 { font-size: 26px !important; }
+    h4 { font-size: 22px !important; }
     .chat-message {
         padding: 10px 15px;
         border-radius: 10px;
         margin: 5px 0;
         max-width: 85%;
+        font-size: 18px;
     }
     .user-message {
         background: #1e3a5f;
@@ -79,6 +93,25 @@ CUSTOM_CSS = """
         padding: 15px;
         border-radius: 10px;
         margin-bottom: 15px;
+    }
+    .stButton button {
+        font-size: 18px !important;
+    }
+    .stSelectbox label, .stTextInput label {
+        font-size: 18px !important;
+    }
+    .pacman-section {
+        background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        text-align: center;
+    }
+    .pacman-section a {
+        color: #1a1a2e;
+        font-weight: bold;
+        font-size: 20px;
+        text-decoration: none;
     }
 </style>
 """
@@ -501,6 +534,14 @@ def main():
         st.caption("Data Source:")
         st.code("DEMO.DEMO.MESHTASTIC_DATA", language=None)
         st.caption(f"Updated: {datetime.now().strftime('%H:%M:%S')}")
+        
+        st.divider()
+        st.markdown("""
+        <div class="pacman-section">
+            🎮 <a href="https://freepacman.org/" target="_blank">Play Free Pac-Man!</a> 🎮
+        </div>
+        """, unsafe_allow_html=True)
+        st.caption("Take a break and enjoy a classic game!")
         
         if auto_refresh:
             import time

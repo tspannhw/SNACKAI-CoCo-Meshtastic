@@ -299,6 +299,15 @@ function App() {
                 <span className="ghost clyde">👻</span>
               </div>
               <div className="score">HIGH SCORE: {stats.totalMessages * 100}</div>
+              <a 
+                href="https://freepacman.org/" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="pacman-game-link"
+              >
+                <span className="pacman-icon">ᗧ</span>
+                PLAY FREE PAC-MAN!
+              </a>
             </div>
           </>
         )}
