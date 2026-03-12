@@ -1,566 +1,309 @@
-# Meshtastic Mesh Network Streamer for Snowflake
+# Meshtastic Mesh Network Dashboard
 
-A Python-based data pipeline that streams real-time data from Meshtastic LoRa mesh network devices to Snowflake using Snowpipe Streaming v2 High-Speed REST API.
+Real-time visualization and monitoring of Meshtastic LoRa mesh network data streamed to Snowflake via Snowpipe Streaming v2.
 
-## Overview
+![Architecture Diagram](architecture_diagram.png)
 
-This project provides a complete solution for capturing IoT sensor data from Meshtastic-compatible devices (like the SenseCAP Card Tracker T1000-E) and streaming it to Snowflake for real-time analytics and visualization.
+## Features
 
-### Key Features
+### 🗺️ Interactive Map with Detailed Popups
+- **Folium-based interactive map** with multiple base layers (OpenStreetMap, Dark Mode, Satellite)
+- **Click-to-view popups** showing comprehensive device information:
+  - GPS: latitude, longitude, altitude, speed, satellites
+  - Device: battery level (color-coded), voltage, uptime
+  - Environmental: temperature (°C/°F), humidity
+  - Signal: SNR, RSSI
+  - Last seen timestamp
+- **Closable popups** - click X or outside to dismiss
+- **Marker clustering** for dense node areas
+- **Movement tracking** with polyline trails
 
-- **Real-time Streaming**: Uses Snowpipe Streaming v2 REST API for high-performance data ingestion
-- **Multi-Connection Support**: BLE (Bluetooth), Serial, and TCP connections
-- **Auto-Discovery**: Automatically scans for available Meshtastic devices
-- **Comprehensive Data Capture**: GPS, telemetry, environmental sensors, and mesh messages
-- **Interactive Dashboard**: Streamlit-based visualization with live maps
-- **Clean Shutdown**: Graceful Ctrl+C handling with data flush
+### 🔍 Location Search
+- Search by **address** (geocoded via Nominatim)
+- Search by **coordinates** (lat, long)
+- **Configurable radius** (5-100km)
+- **HAVERSINE distance** calculation to find nearby nodes
+- Visual **search radius circle** on map
+
+### 🤖 Cortex Agent Chat Interface
+- **Natural language queries** about mesh network data
+- Integrated with `DEMO.DEMO.MESHTASTIC_AGENT`
+- **Example questions** provided for easy exploration
+- **Chat history** preserved during session
+- Quick **location-based queries**
+
+### 📊 Comprehensive Analytics
+- Device health monitoring (battery, voltage, uptime)
+- Environmental sensors (temperature, humidity, pressure)
+- GPS quality metrics (satellites, HDOP, PDOP)
+- Signal quality distribution (SNR, RSSI)
+- Hourly traffic patterns
+- Node activity summaries
+
+### 📢 Slack Notifications
+- Configurable webhook alerts
+- Low battery warnings
+- Position updates
+- Device offline alerts
 
 ## Architecture
 
 ```
-┌─────────────────┐      ┌──────────────────┐      ┌─────────────────┐
-│   Meshtastic    │      │     Python       │      │    Snowflake    │
-│   T1000-E       │─────▶│    Streamer      │─────▶│   Snowpipe v2   │
-│   (BLE/Serial)  │      │                  │      │   REST API      │
-└─────────────────┘      └──────────────────┘      └─────────────────┘
-         │                        │                        │
-         │                        │                        ▼
-    GPS/Sensors           Message Queue            MESHTASTIC_DATA
-    Position              Batch Processing              Table
-    Telemetry             JSON Serialization            │
-    Environment                                         ▼
-                                                  ┌─────────────────┐
-                                                  │   Streamlit     │
-                                                  │   Dashboard     │
-                                                  └─────────────────┘
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  SenseCAP       │     │  Python          │     │  Snowflake      │
+│  T1000-E        │────▶│  Streamer        │────▶│  MESHTASTIC_    │
+│  (LoRa GPS)     │     │  (Snowpipe v2)   │     │  DATA           │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+┌─────────────────┐     ┌──────────────────┐              │
+│  Meshtastic     │────▶│  Validation      │              ▼
+│  Nodes          │     │  Module          │     ┌─────────────────┐
+└─────────────────┘     └──────────────────┘     │  Dynamic        │
+                                                 │  Tables         │
+                                                 └────────┬────────┘
+                                                          │
+┌─────────────────┐     ┌──────────────────┐              │
+│  Streamlit      │◀────│  Cortex          │◀─────────────┘
+│  Dashboard      │     │  Agent           │
+└────────┬────────┘     └──────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  User           │
+│  (Browser)      │
+└─────────────────┘
 ```
-
-## Supported Hardware
-
-### Primary Device: SenseCAP Card Tracker T1000-E
-- **GPS**: Latitude, longitude, altitude, speed, heading, satellites, DOP values
-- **Device Telemetry**: Battery level, voltage, uptime
-- **Environmental Sensors**: Temperature, humidity, barometric pressure
-- **Connectivity**: BLE (Bluetooth Low Energy), Serial USB
-
-### Other Compatible Devices
-- Heltec LoRa 32
-- LILYGO T-Beam
-- RAK WisBlock
-- Any Meshtastic-compatible device
 
 ## Installation
 
 ### Prerequisites
-
 - Python 3.9+
-- Snowflake account with Snowpipe Streaming enabled
-- Meshtastic device with firmware 2.0+
-- macOS/Linux (for BLE support)
+- Snowflake account with Cortex AI enabled
+- Snowflake connection configured
 
-### Setup
-
+### Install Dependencies
 ```bash
-# Clone or navigate to project directory
-cd meshtastic
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install meshtastic bleak pyserial requests snowflake-connector-python streamlit plotly pandas
+pip install -r requirements.txt
 ```
 
-## Configuration
-
-### snowflake_config.json
-
-```json
-{
-    "account": "YOUR_ACCOUNT",
-    "user": "YOUR_USER",
-    "role": "YOUR_ROLE",
-    "warehouse": "YOUR_WAREHOUSE",
-    "pat": "YOUR_PAT_TOKEN",
-    "database": "DEMO",
-    "schema": "DEMO",
-    "table": "MESHTASTIC_DATA",
-    "pipe": "MESHTASTIC_STREAM_PIPE",
-    "channel_name": "MESH_CHNL",
-    "batch_size": 10,
-    "flush_interval_seconds": 5,
-    "meshtastic": {
-        "connection_type": "auto",
-        "device_path": null,
-        "ble_address": "YOUR_BLE_ADDRESS",
-        "hostname": null
-    }
-}
+### Required Packages
 ```
-
-### Connection Types
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `auto` | Auto-detect best available | Recommended default |
-| `serial` | USB serial connection | Most reliable |
-| `ble` | Bluetooth Low Energy | Wireless, no cable |
-| `tcp` | Network connection | Remote devices |
-
-## Snowflake Setup
-
-### 1. Create the Target Table
-
-```sql
-CREATE OR REPLACE TABLE DEMO.DEMO.MESHTASTIC_DATA (
-    -- Metadata
-    ingested_at TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
-    packet_type STRING,
-    
-    -- Source/Destination
-    from_id STRING,
-    from_num NUMBER,
-    to_id STRING,
-    to_num NUMBER,
-    channel NUMBER,
-    
-    -- Signal Quality
-    rx_snr FLOAT,
-    rx_rssi FLOAT,
-    hop_limit NUMBER,
-    hop_start NUMBER,
-    
-    -- GPS Position
-    latitude FLOAT,
-    longitude FLOAT,
-    altitude NUMBER,
-    altitude_hae NUMBER,
-    altitude_geoidal_separation NUMBER,
-    ground_speed NUMBER,
-    ground_track NUMBER,
-    precision_bits NUMBER,
-    sats_in_view NUMBER,
-    pdop NUMBER,
-    hdop NUMBER,
-    vdop NUMBER,
-    gps_timestamp NUMBER,
-    fix_quality NUMBER,
-    fix_type NUMBER,
-    position_source STRING,
-    seq_number NUMBER,
-    
-    -- Text Messages
-    text_message STRING,
-    
-    -- Device Telemetry
-    battery_level NUMBER,
-    voltage FLOAT,
-    channel_utilization FLOAT,
-    air_util_tx FLOAT,
-    uptime_seconds NUMBER,
-    
-    -- Environmental Sensors
-    temperature FLOAT,
-    temperature_f FLOAT,
-    relative_humidity FLOAT,
-    barometric_pressure FLOAT,
-    gas_resistance FLOAT,
-    iaq NUMBER,
-    
-    -- Light Sensors
-    lux FLOAT,
-    white_lux FLOAT,
-    ir_lux FLOAT,
-    uv_lux FLOAT,
-    
-    -- Weather
-    wind_direction NUMBER,
-    wind_speed FLOAT,
-    wind_gust FLOAT,
-    
-    -- Other Sensors
-    weight FLOAT,
-    distance FLOAT,
-    
-    -- Air Quality
-    pm10_standard NUMBER,
-    pm25_standard NUMBER,
-    pm100_standard NUMBER,
-    pm10_environmental NUMBER,
-    pm25_environmental NUMBER,
-    pm100_environmental NUMBER,
-    co2 NUMBER,
-    
-    -- Power Monitoring
-    ch1_voltage FLOAT,
-    ch1_current FLOAT,
-    ch2_voltage FLOAT,
-    ch2_current FLOAT,
-    ch3_voltage FLOAT,
-    ch3_current FLOAT,
-    
-    -- Raw Data
-    raw_packet VARIANT
-);
-```
-
-### 2. Create the Streaming Pipe
-
-```sql
-CREATE OR REPLACE PIPE DEMO.DEMO.MESHTASTIC_STREAM_PIPE
-    AS COPY INTO DEMO.DEMO.MESHTASTIC_DATA
-    FROM (SELECT * FROM TABLE(DATA_SOURCE(TYPE => 'STREAMING')));
-```
-
-### 3. Create PAT Token
-
-```sql
--- In Snowsight: Admin > Security > Programmatic Access Tokens
--- Or via SQL:
-ALTER USER your_user SET PROGRAMMATIC_ACCESS_TOKEN = TRUE;
+streamlit>=1.30.0
+pandas>=2.0.0
+plotly>=5.18.0
+folium>=0.15.0
+streamlit-folium>=0.15.0
+snowflake-connector-python>=3.6.0
+requests>=2.31.0
 ```
 
 ## Usage
 
-### Start the Streamer
-
-```bash
-# Activate virtual environment
-source .venv/bin/activate
-
-# Run with auto-detection
-python meshtastic_snowflake_streamer.py
-
-# Or specify connection type
-# Edit snowflake_config.json: "connection_type": "serial"
-```
-
-### Expected Output
-
-```
-======================================================================
-MESHTASTIC-SNOWFLAKE STREAMER - SNOWPIPE STREAMING V2 MODE
-Using ONLY Snowpipe Streaming v2 REST API - NO SQL INSERTs
-======================================================================
-==================================================
-SCANNING FOR MESHTASTIC DEVICES
-==================================================
-Scanning for serial devices...
-Found serial device: /dev/cu.usbmodem13301 - T1000-E
-Scanning for Bluetooth devices (10.0s)...
-Found BLE device: Meshtastic_4b14 (93C61E0F-855D-AECB-05B1-3C5193B22964)
-Scan complete: 1 serial, 1 BLE devices found
-==================================================
-Connected via BLE: 93C61E0F-855D-AECB-05B1-3C5193B22964
-Position from !b9d44b14: lat=40.291533, lon=-74.527539, alt=44
-Telemetry from !b9d44b14: temp=29.5, battery=101%, voltage=3.92V
-Successfully appended 2 rows
-```
-
-### Stop the Streamer
-
-Press `Ctrl+C` for graceful shutdown:
-```
-Received signal 2, shutting down gracefully...
-Streaming worker stopped
-```
-
-## Dashboard
-
 ### Run Locally
-
 ```bash
-source .venv/bin/activate
-streamlit run streamlit_app.py
+# Set your Snowflake connection
+export SNOWFLAKE_CONNECTION_NAME=your_connection
+
+# Run the dashboard
+streamlit run streamlit_app.py --server.port 8501
 ```
 
 ### Deploy to Snowflake (Streamlit in Snowflake)
-
 ```sql
--- Upload streamlit_app.py to a stage
-PUT file:///path/to/streamlit_app.py @DEMO.DEMO.STREAMLIT_STAGE AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
-
--- Create Streamlit app
-CREATE OR REPLACE STREAMLIT DEMO.DEMO.MESHTASTIC_DASHBOARD
-    ROOT_LOCATION = '@DEMO.DEMO.STREAMLIT_STAGE'
-    MAIN_FILE = 'streamlit_app.py'
-    QUERY_WAREHOUSE = 'COMPUTE_WH';
+CREATE STREAMLIT DEMO.DEMO.MESHTASTIC_DASHBOARD
+  ROOT_LOCATION = '@DEMO.DEMO.STREAMLIT_APPS/meshtastic'
+  MAIN_FILE = 'streamlit_app.py'
+  QUERY_WAREHOUSE = 'COMPUTE_WH';
 ```
 
-### Dashboard Features
+## Data Schema
 
-| Tab | Description |
-|-----|-------------|
-| **Live Map** | Interactive map with device locations and movement tracks |
-| **Device Status** | Battery levels, voltage, uptime, signal quality |
-| **Environmental** | Temperature, humidity, pressure charts |
-| **GPS Details** | Position accuracy, satellites, altitude profiles |
-| **Analytics** | Packet distribution, traffic patterns, node activity |
-| **AI Analysis** | Cortex AI-powered insights, sentiment, classification |
-| **Raw Data** | Browse and export raw packet data |
-| **Slack** | Send manual alerts and device status to Slack |
-
-## Cortex AI Analysis
-
-The dashboard includes AI-powered analysis using Snowflake Cortex AI SQL functions.
-
-### Available AI Features
-
-| Feature | Function | Description |
-|---------|----------|-------------|
-| **Sentiment Analysis** | `SNOWFLAKE.CORTEX.SENTIMENT` | Analyze sentiment of text messages (-1 to 1) |
-| **AI Insights** | `SNOWFLAKE.CORTEX.COMPLETE` | Generate device health and network reports |
-| **Classification** | `SNOWFLAKE.CORTEX.CLASSIFY_TEXT` | Classify battery/signal status into categories |
-| **Summarization** | `SNOWFLAKE.CORTEX.SUMMARIZE` | Generate network activity summaries |
-| **Custom Queries** | `SNOWFLAKE.CORTEX.COMPLETE` | Ask natural language questions about data |
-
-### AI Analysis Tab Features
-
-1. **Text Message Analysis**: Analyze sentiment of mesh network messages
-2. **AI-Powered Insights**: Generate health summaries, network reports, location analysis
-3. **Device Classification**: Classify battery and signal quality into human-readable categories
-4. **Network Summarization**: AI-generated summaries of recent network activity
-5. **Custom AI Queries**: Ask questions about your mesh network data in natural language
-
-### Configure Cortex AI in `snowflake_config.json`
-
-```json
-{
-    "cortex_ai": {
-        "enabled": true,
-        "model": "mistral-large2",
-        "analyze_text_messages": true,
-        "generate_insights": true,
-        "sentiment_analysis": true,
-        "alert_on_anomalies": false
-    }
-}
-```
-
-### Supported Models
-
-- `mistral-large2` - Best for complex analysis (recommended)
-- `llama3.1-70b` - Good balance of speed and quality
-- `llama3.1-8b` - Fastest, for simple tasks
-
-## Semantic View
-
-A semantic view is provided for natural language queries via Cortex Analyst.
-
-### Create Semantic View
-
+### MESHTASTIC_DATA Table
 ```sql
--- Run the SQL in semantic_view.sql
-USE ROLE ACCOUNTADMIN;
-USE DATABASE DEMO;
-USE SCHEMA DEMO;
-
-CREATE OR REPLACE SEMANTIC VIEW MESHTASTIC_SEMANTIC_VIEW
-  TABLES (
-    mesh AS DEMO.DEMO.MESHTASTIC_DATA PRIMARY KEY (ingested_at, from_id)
-  )
-  FACTS (
-    mesh.rx_snr AS rx_snr COMMENT = 'Signal-to-noise ratio in dB',
-    mesh.battery_level AS battery_level COMMENT = 'Battery level percentage 0-100',
-    mesh.temperature AS temperature COMMENT = 'Temperature in Celsius',
-    -- ... additional facts
-  )
-  DIMENSIONS (
-    mesh.packet_type AS packet_type COMMENT = 'Type of packet: position, telemetry, text',
-    mesh.from_id AS from_id COMMENT = 'Source node ID',
-    -- ... additional dimensions
-  )
-  METRICS (
-    mesh.total_packets AS COUNT(*) COMMENT = 'Total number of packets',
-    mesh.avg_battery AS AVG(mesh.battery_level) COMMENT = 'Average battery level',
-    -- ... additional metrics
-  )
-  COMMENT = 'Meshtastic mesh network data semantic model';
-```
-
-### Query with Natural Language
-
-Once created, use Cortex Analyst to query the semantic view:
-
-```sql
--- Example: Ask natural language questions
-SELECT * FROM TABLE(
-  SNOWFLAKE.CORTEX.ANALYST(
-    'DEMO.DEMO.MESHTASTIC_SEMANTIC_VIEW',
-    'What is the average battery level by device?'
-  )
+CREATE TABLE DEMO.DEMO.MESHTASTIC_DATA (
+    packet_id STRING,
+    from_id STRING,
+    to_id STRING,
+    packet_type STRING,
+    latitude FLOAT,
+    longitude FLOAT,
+    altitude FLOAT,
+    ground_speed FLOAT,
+    ground_track FLOAT,
+    sats_in_view INT,
+    hdop INT,
+    pdop INT,
+    vdop INT,
+    gps_timestamp INT,
+    precision_bits INT,
+    battery_level FLOAT,
+    voltage FLOAT,
+    temperature FLOAT,
+    relative_humidity FLOAT,
+    barometric_pressure FLOAT,
+    uptime_seconds INT,
+    channel_utilization FLOAT,
+    air_util_tx FLOAT,
+    rx_snr FLOAT,
+    rx_rssi FLOAT,
+    text_message STRING,
+    channel INT,
+    hop_limit INT,
+    ingested_at TIMESTAMP_TZ
 );
 ```
 
-## Slack Integration
+## Testing
 
-The streamer and dashboard support Slack notifications for real-time alerts.
+### Run Unit Tests
+```bash
+# Run all tests
+pytest tests/ -v
 
-### Setup Slack Webhook
+# Run specific test file
+pytest tests/test_streamlit_app.py -v
 
-1. Go to [Slack API Apps](https://api.slack.com/apps)
-2. Create a new app or select existing
-3. Enable **Incoming Webhooks**
-4. Create a webhook URL for your channel
-5. Add the webhook URL to config
-
-### Configure in `snowflake_config.json`
-
-```json
-{
-    "slack": {
-        "enabled": true,
-        "webhook_url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
-        "channel": "#meshtastic-alerts",
-        "low_battery_threshold": 20,
-        "notify_position": false
-    }
-}
+# Run with coverage
+pytest tests/ --cov=. --cov-report=html
 ```
 
-### Alert Types
+### Test Categories
+- **Unit Tests**: `tests/test_streamlit_app.py` - Dashboard component tests
+- **Validation Tests**: `tests/test_validation.py` - Data validation tests
+- **Integration Tests**: `tests/test_meshtastic_streaming.py` - Streaming tests
 
-| Alert | Trigger | Description |
-|-------|---------|-------------|
-| **Low Battery** | Battery ≤ threshold | Automatic alert when device battery is low |
-| **Position Update** | New GPS fix | Optional notification for location changes |
-| **Manual Alert** | Dashboard button | Send custom alerts from Slack tab |
+## Validation Module
 
-### Dashboard Slack Features
+The `validation.py` module provides comprehensive data validation:
 
-- Configure webhook URL in sidebar
-- Test Slack connection
-- Send manual alerts with custom messages
-- Share device status summaries
+### Coordinate Validation
+```python
+from validation import CoordinateValidator
 
-## Data Captured
+result = CoordinateValidator.validate_coordinates(40.7128, -74.0060)
+if result.is_valid:
+    lat, lon = result.value
+```
 
-### GPS Position (every 15 min default)
-| Field | Description |
-|-------|-------------|
-| latitude | Decimal degrees |
-| longitude | Decimal degrees |
-| altitude | Meters above sea level |
-| ground_speed | Meters per second |
-| ground_track | Heading in degrees |
-| sats_in_view | Number of GPS satellites |
-| pdop/hdop/vdop | Dilution of precision values |
-| gps_timestamp | Unix timestamp from GPS |
+### Device Data Validation
+```python
+from validation import DeviceDataValidator
 
-### Device Telemetry (every 30 sec)
-| Field | Description |
-|-------|-------------|
-| battery_level | Percentage (0-100) |
-| voltage | Battery voltage |
-| uptime_seconds | Device uptime |
-| channel_utilization | LoRa channel usage % |
-| air_util_tx | Transmit air utilization |
+result = DeviceDataValidator.validate_battery_level(75)
+if result.warnings:
+    print(result.warnings)  # ["Low battery warning: 15%"]
+```
 
-### Environmental (every 30 min default)
-| Field | Description |
-|-------|-------------|
-| temperature | Celsius |
-| relative_humidity | Percentage |
-| barometric_pressure | Pascals |
+### Node ID Validation
+```python
+from validation import NodeIdValidator
 
-## Project Structure
+result = NodeIdValidator.validate_node_id("!abc12345")
+assert result.is_valid
+```
+
+### DataFrame Validation
+```python
+from validation import validate_dataframe
+
+df, warnings = validate_dataframe(raw_df)
+# Filters invalid coordinates, clips out-of-range values
+```
+
+## Cortex Agent Queries
+
+Example questions for the AI Agent:
+
+- "What Meshtastic nodes are active right now?"
+- "Show me devices with low battery"
+- "What is the network health summary?"
+- "Which devices have poor signal quality?"
+- "What are the recent GPS positions?"
+- "Find nodes near coordinates 40.7580, -73.9855"
+- "How many packets were received in the last hour?"
+
+## Configuration
+
+### Environment Variables
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SNOWFLAKE_CONNECTION_NAME` | Snowflake connection name | `tspann1` |
+
+### Sidebar Settings
+- **Time Range**: Filter data by time period
+- **Auto-refresh**: Enable 30-second auto-refresh
+- **Temperature Unit**: Toggle °C/°F display
+- **Slack Notifications**: Configure webhook alerts
+
+## File Structure
 
 ```
 meshtastic/
-├── meshtastic_snowflake_streamer.py  # Main orchestrator
-├── meshtastic_interface.py           # Device connection & parsing
-├── snowpipe_streaming_client.py      # Snowpipe v2 REST client
-├── streamlit_app.py                  # Dashboard
-├── snowflake_config.json             # Configuration
-├── test_packet_parsing.py            # Unit tests
-└── README.md                         # This file
+├── streamlit_app.py          # Main dashboard application
+├── validation.py             # Data validation module
+├── generate_diagram.py       # Architecture diagram generator
+├── architecture_diagram.png  # System architecture diagram
+├── requirements.txt          # Python dependencies
+├── README.md                 # This documentation
+├── tests/
+│   ├── __init__.py
+│   ├── test_streamlit_app.py # Dashboard unit tests
+│   ├── test_validation.py    # Validation unit tests
+│   └── test_meshtastic_streaming.py
+├── meshtastic_interface.py   # Device interface
+├── meshtastic_snowflake_streamer.py  # Data streamer
+└── snowpipe_streaming_client.py      # Snowpipe client
 ```
-
-## Troubleshooting
-
-### BLE Connection Issues
-```bash
-# Scan for devices manually
-python -c "from meshtastic_interface import MeshtasticReceiver; r=MeshtasticReceiver(); print(r.scan_ble_devices())"
-```
-
-### No GPS Data
-- Ensure device is outdoors with clear sky view
-- Wait 1-2 minutes for cold start GPS fix
-- Check position broadcasting is enabled in device settings
-
-### Snowpipe Errors
-- Verify PAT token is valid and not expired
-- Check table schema matches expected columns
-- Ensure pipe is in RUNNING state: `SHOW PIPES`
-
-### Device in Boot Mode
-- T1000-E shows as "T1000-E-BOOT" when in bootloader
-- Press reset button or power cycle the device
 
 ## API Reference
 
-### MeshtasticReceiver
+### Core Functions
 
-```python
-from meshtastic_interface import MeshtasticReceiver
+#### `create_folium_map(positions_df, center_lat, center_lon, search_lat, search_lon, search_label)`
+Creates an interactive Folium map with device markers.
 
-# Auto-detect and connect
-receiver = MeshtasticReceiver(connection_type='auto')
-receiver.connect()
+**Parameters:**
+- `positions_df`: DataFrame with device positions
+- `center_lat/lon`: Map center coordinates (optional)
+- `search_lat/lon`: Search location marker (optional)
+- `search_label`: Label for search marker (optional)
 
-# Or specify connection
-receiver = MeshtasticReceiver(
-    connection_type='ble',
-    device_path='93C61E0F-855D-AECB-05B1-3C5193B22964'
-)
+**Returns:** `folium.Map` object
 
-# Scan for devices
-serial_devices = receiver.scan_serial_devices()
-ble_devices = receiver.scan_ble_devices()
-all_devices = receiver.scan_all_devices()
-```
+#### `get_nodes_near_location(lat, lon, radius_km)`
+Find nodes within a specified radius of a location.
 
-### SnowpipeStreamingClient
+**Parameters:**
+- `lat`: Latitude of search center
+- `lon`: Longitude of search center
+- `radius_km`: Search radius in kilometers
 
-```python
-from snowpipe_streaming_client import SnowpipeStreamingClient
+**Returns:** DataFrame with nearby nodes and distances
 
-client = SnowpipeStreamingClient('snowflake_config.json')
-client.discover_ingest_host()
-client.open_channel()
+#### `query_cortex_agent(question)`
+Send a natural language query to the Cortex Agent.
 
-rows = [{'packet_type': 'test', 'from_id': '!test'}]
-client.insert_rows(rows)
+**Parameters:**
+- `question`: Natural language question string
 
-client.close_channel()
-```
+**Returns:** Agent response string
 
-## Slack Details
+## Troubleshooting
 
-````
+### No Position Data
+- Ensure device has GPS lock (outdoor, clear sky view)
+- Wait 1-2 minutes for cold start GPS fix
+- Verify position broadcasting is enabled
 
-[12:14 PM] Device Metrics
-Device: !bb97d6ec
-• Battery:  101%
-• Voltage: 0.00V
-• Channel Util: 9.7%
-• Air Util TX: 3.8%
-• Uptime: 1056h 40m
-• SNR: -19.25 dB
-• RSSI: -108 dBm
-• Time: 2026-02-10 12:14:20[12:14 PM] Position Update
-Device: !ba663400
-• Location: 45.639270, -122.604749
-• Altitude: 93m
-• Speed: N/A m/s
-• Heading: N/A°
-• Satellites: None
-• Map: https://maps.google.com/?q=45.6392704,-122.6047488
-• Time: 2026-02-10 12:14:21
+### Map Not Loading
+- Check internet connection for tile loading
+- Verify `streamlit-folium` is installed
+- Check browser console for errors
 
-````
+### Agent Not Responding
+- Verify `DEMO.DEMO.MESHTASTIC_AGENT` exists
+- Check Cortex AI is enabled in your region
+- Review agent permissions
 
 ## License
 
@@ -570,10 +313,11 @@ MIT License - See LICENSE file for details.
 
 1. Fork the repository
 2. Create a feature branch
-3. Submit a pull request
+3. Add tests for new functionality
+4. Submit a pull request
 
 ## Support
 
-- Meshtastic Documentation: https://meshtastic.org/docs/
-- Snowpipe Streaming: https://docs.snowflake.com/en/user-guide/data-load-snowpipe-streaming-overview
-- SenseCAP T1000-E: https://wiki.seeedstudio.com/sensecap_t1000_e/
+- **Issues**: GitHub Issues
+- **Documentation**: This README
+- **Slack**: #meshtastic-alerts (if configured)

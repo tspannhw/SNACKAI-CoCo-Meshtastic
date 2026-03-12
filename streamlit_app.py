@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Meshtastic Mesh Network Dashboard
-=================================
+Meshtastic Mesh Network Dashboard - Enhanced Edition
+=====================================================
 Real-time visualization and monitoring of Meshtastic LoRa mesh network data
-streamed to Snowflake via Snowpipe Streaming v2.
+with interactive maps, search, and Cortex Agent integration.
 
 Features:
-- Interactive map with device locations and tracking
+- Interactive Folium map with detailed clickable popups
+- Location search (address or lat/long)
+- Cortex Agent chat interface for natural language queries
 - Real-time telemetry monitoring (battery, temperature, humidity)
 - GPS data visualization (position, altitude, speed, satellites)
 - Signal quality metrics (SNR, RSSI)
 - Network analytics and traffic patterns
-- Device health monitoring
 
 Data Source: DEMO.DEMO.MESHTASTIC_DATA (Snowpipe Streaming v2)
-Device: SenseCAP Card Tracker T1000-E via BLE/Serial
 """
 
 import streamlit as st
@@ -25,6 +25,10 @@ from datetime import datetime, timedelta
 import json
 import os
 import requests
+import folium
+from folium.plugins import MarkerCluster, Search, Fullscreen, LocateControl
+from streamlit_folium import st_folium
+import re
 
 st.set_page_config(
     page_title="Meshtastic Mesh Network Dashboard",
@@ -54,6 +58,27 @@ CUSTOM_CSS = """
     }
     div[data-testid="stMetricValue"] {
         font-size: 28px;
+    }
+    .chat-message {
+        padding: 10px 15px;
+        border-radius: 10px;
+        margin: 5px 0;
+        max-width: 85%;
+    }
+    .user-message {
+        background: #1e3a5f;
+        margin-left: auto;
+        text-align: right;
+    }
+    .agent-message {
+        background: #2d5a87;
+        margin-right: auto;
+    }
+    .search-container {
+        background: #1a1a2e;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 15px;
     }
 </style>
 """
@@ -152,12 +177,254 @@ def format_slack_alert(device_id: str, alert_type: str, data: dict) -> str:
     return msg
 
 
+def geocode_address(address: str) -> tuple:
+    """Geocode an address to lat/long using Nominatim."""
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            "q": address,
+            "format": "json",
+            "limit": 1
+        }
+        headers = {"User-Agent": "MeshtasticDashboard/1.0"}
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        if response.status_code == 200:
+            results = response.json()
+            if results:
+                return float(results[0]["lat"]), float(results[0]["lon"]), results[0].get("display_name", address)
+    except Exception as e:
+        st.warning(f"Geocoding error: {e}")
+    return None, None, None
+
+
+def parse_coordinates(text: str) -> tuple:
+    """Parse coordinates from text (lat, long or lat long)."""
+    patterns = [
+        r'(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.strip())
+        if match:
+            lat, lon = float(match.group(1)), float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon, f"{lat:.6f}, {lon:.6f}"
+    return None, None, None
+
+
+def query_cortex_agent(question: str) -> str:
+    """Query the Meshtastic Cortex Agent."""
+    try:
+        safe_question = question.replace("'", "''").replace("\\", "\\\\")
+        query = f"""
+        SELECT SNOWFLAKE.CORTEX.COMPLETE(
+            'DEMO.DEMO.MESHTASTIC_AGENT',
+            '{safe_question}'
+        ) as response
+        """
+        result = run_query(query)
+        if not result.empty and result['RESPONSE'].iloc[0]:
+            return result['RESPONSE'].iloc[0]
+        return "I couldn't get a response. Please try rephrasing your question."
+    except Exception as e:
+        return f"Error querying agent: {str(e)}"
+
+
+def get_nodes_near_location(lat: float, lon: float, radius_km: float = 10) -> pd.DataFrame:
+    """Find nodes near a specific location."""
+    query = f"""
+    SELECT 
+        from_id,
+        latitude,
+        longitude,
+        altitude,
+        battery_level,
+        temperature,
+        rx_snr,
+        rx_rssi,
+        ingested_at,
+        HAVERSINE({lat}, {lon}, latitude, longitude) as distance_km
+    FROM DEMO.DEMO.MESHTASTIC_DATA
+    WHERE packet_type = 'position'
+      AND latitude IS NOT NULL 
+      AND longitude IS NOT NULL
+      AND latitude != 0
+      AND longitude != 0
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY from_id ORDER BY ingested_at DESC) = 1
+    HAVING distance_km <= {radius_km}
+    ORDER BY distance_km
+    """
+    return run_query(query)
+
+
+def create_folium_map(positions_df: pd.DataFrame, center_lat: float = None, center_lon: float = None, 
+                      search_lat: float = None, search_lon: float = None, search_label: str = None) -> folium.Map:
+    """Create an interactive Folium map with detailed popups."""
+    if center_lat is None and not positions_df.empty:
+        center_lat = positions_df['LATITUDE'].mean()
+        center_lon = positions_df['LONGITUDE'].mean()
+    elif center_lat is None:
+        center_lat, center_lon = 40.7128, -74.0060
+    
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=12,
+        tiles='OpenStreetMap',
+        control_scale=True
+    )
+    
+    Fullscreen(position='topleft').add_to(m)
+    LocateControl(auto_start=False).add_to(m)
+    
+    folium.TileLayer('cartodbdark_matter', name='Dark Mode').add_to(m)
+    folium.TileLayer('cartodbpositron', name='Light Mode').add_to(m)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Satellite'
+    ).add_to(m)
+    
+    if search_lat and search_lon:
+        folium.Marker(
+            location=[search_lat, search_lon],
+            popup=folium.Popup(f"<b>Search Location</b><br>{search_label or 'Selected Location'}", max_width=300),
+            icon=folium.Icon(color='red', icon='search', prefix='fa'),
+            tooltip="Search Location"
+        ).add_to(m)
+        
+        folium.Circle(
+            location=[search_lat, search_lon],
+            radius=10000,
+            color='red',
+            fill=True,
+            fill_opacity=0.1,
+            popup="10km Search Radius"
+        ).add_to(m)
+    
+    if not positions_df.empty:
+        marker_cluster = MarkerCluster(name="Clustered Nodes").add_to(m)
+        node_layer = folium.FeatureGroup(name="Individual Nodes")
+        track_layer = folium.FeatureGroup(name="Movement Tracks")
+        
+        for _, row in positions_df.iterrows():
+            node_id = row.get('FROM_ID', 'Unknown')
+            lat = row.get('LATITUDE')
+            lon = row.get('LONGITUDE')
+            
+            if pd.isna(lat) or pd.isna(lon):
+                continue
+            
+            battery = row.get('BATTERY_LEVEL')
+            temp = row.get('TEMPERATURE')
+            altitude = row.get('ALTITUDE')
+            speed = row.get('GROUND_SPEED')
+            sats = row.get('SATS_IN_VIEW')
+            snr = row.get('RX_SNR')
+            rssi = row.get('RX_RSSI')
+            humidity = row.get('RELATIVE_HUMIDITY')
+            voltage = row.get('VOLTAGE')
+            uptime = row.get('UPTIME_SECONDS')
+            last_seen = row.get('INGESTED_AT')
+            distance = row.get('DISTANCE_KM')
+            
+            bat_color, _ = get_battery_status(battery)
+            
+            popup_html = f"""
+            <div style="font-family: Arial, sans-serif; min-width: 280px; max-width: 350px;">
+                <h3 style="margin: 0 0 10px 0; color: #1e3a5f; border-bottom: 2px solid #2d5a87; padding-bottom: 5px;">
+                    📡 {node_id}
+                </h3>
+                
+                <div style="background: #f5f5f5; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    <h4 style="margin: 0 0 5px 0; color: #333;">📍 Location</h4>
+                    <table style="width: 100%; font-size: 13px;">
+                        <tr><td><b>Latitude:</b></td><td>{lat:.6f}°</td></tr>
+                        <tr><td><b>Longitude:</b></td><td>{lon:.6f}°</td></tr>
+                        <tr><td><b>Altitude:</b></td><td>{f'{altitude:.1f} m' if pd.notna(altitude) else 'N/A'}</td></tr>
+                        <tr><td><b>Speed:</b></td><td>{f'{speed:.1f} m/s' if pd.notna(speed) else 'N/A'}</td></tr>
+                        <tr><td><b>Satellites:</b></td><td>{int(sats) if pd.notna(sats) else 'N/A'}</td></tr>
+                        {f'<tr><td><b>Distance:</b></td><td>{distance:.2f} km</td></tr>' if pd.notna(distance) else ''}
+                    </table>
+                </div>
+                
+                <div style="background: #e8f4e8; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    <h4 style="margin: 0 0 5px 0; color: #333;">🔋 Device Status</h4>
+                    <table style="width: 100%; font-size: 13px;">
+                        <tr>
+                            <td><b>Battery:</b></td>
+                            <td style="color: {bat_color}; font-weight: bold;">
+                                {f'{int(battery)}%' if pd.notna(battery) else 'N/A'}
+                            </td>
+                        </tr>
+                        <tr><td><b>Voltage:</b></td><td>{f'{voltage:.2f} V' if pd.notna(voltage) else 'N/A'}</td></tr>
+                        <tr><td><b>Uptime:</b></td><td>{f'{int(uptime)//3600}h {(int(uptime)%3600)//60}m' if pd.notna(uptime) else 'N/A'}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="background: #e8f0f8; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    <h4 style="margin: 0 0 5px 0; color: #333;">🌡️ Environmental</h4>
+                    <table style="width: 100%; font-size: 13px;">
+                        <tr><td><b>Temperature:</b></td><td>{f'{temp:.1f}°C ({celsius_to_fahrenheit(temp):.1f}°F)' if pd.notna(temp) else 'N/A'}</td></tr>
+                        <tr><td><b>Humidity:</b></td><td>{f'{humidity:.1f}%' if pd.notna(humidity) else 'N/A'}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="background: #f8f0e8; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    <h4 style="margin: 0 0 5px 0; color: #333;">📶 Signal Quality</h4>
+                    <table style="width: 100%; font-size: 13px;">
+                        <tr><td><b>SNR:</b></td><td>{f'{snr:.1f} dB' if pd.notna(snr) else 'N/A'}</td></tr>
+                        <tr><td><b>RSSI:</b></td><td>{f'{rssi:.0f} dBm' if pd.notna(rssi) else 'N/A'}</td></tr>
+                    </table>
+                </div>
+                
+                <div style="text-align: center; color: #666; font-size: 11px; margin-top: 5px;">
+                    Last seen: {format_timestamp(last_seen)}
+                </div>
+            </div>
+            """
+            
+            popup = folium.Popup(popup_html, max_width=400)
+            
+            if pd.notna(battery):
+                if battery >= 80:
+                    icon_color = 'green'
+                elif battery >= 50:
+                    icon_color = 'lightgreen'
+                elif battery >= 20:
+                    icon_color = 'orange'
+                else:
+                    icon_color = 'red'
+            else:
+                icon_color = 'blue'
+            
+            marker = folium.Marker(
+                location=[lat, lon],
+                popup=popup,
+                icon=folium.Icon(color=icon_color, icon='broadcast-tower', prefix='fa'),
+                tooltip=f"{node_id} | Battery: {int(battery) if pd.notna(battery) else 'N/A'}% | SNR: {f'{snr:.1f}' if pd.notna(snr) else 'N/A'} dB"
+            )
+            
+            marker.add_to(marker_cluster)
+            marker.add_to(node_layer)
+        
+        node_layer.add_to(m)
+        track_layer.add_to(m)
+    
+    folium.LayerControl(collapsed=False).add_to(m)
+    
+    return m
+
+
 def main():
     st.title("📡 Meshtastic Mesh Network Dashboard")
     st.markdown("""
     **Real-time monitoring** of LoRa mesh network nodes via Snowpipe Streaming v2  
     *SenseCAP T1000-E Tracker | GPS + Environmental Sensors | BLE/Serial Connection*
     """)
+    
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    if 'search_location' not in st.session_state:
+        st.session_state.search_location = None
     
     with st.sidebar:
         st.image("https://meshtastic.org/img/logo.svg", width=150)
@@ -295,31 +562,69 @@ def main():
     except Exception as e:
         st.warning(f"Could not load statistics: {e}")
     
-    tab_map, tab_device, tab_env, tab_gps, tab_analytics, tab_ai, tab_raw, tab_slack = st.tabs([
-        "🗺️ Live Map",
+    tab_map, tab_agent, tab_device, tab_env, tab_gps, tab_analytics, tab_raw = st.tabs([
+        "🗺️ Live Map & Search",
+        "🤖 AI Agent",
         "🔋 Device Status", 
         "🌡️ Environmental",
         "📍 GPS Details",
         "📊 Analytics",
-        "🤖 AI Analysis",
-        "🔍 Raw Data",
-        "📢 Slack"
+        "🔍 Raw Data"
     ])
     
     with tab_map:
-        st.subheader("Live Device Locations")
-        st.markdown("Interactive map showing mesh network node positions with tracking history")
+        st.subheader("Interactive Device Map")
+        
+        search_col1, search_col2, search_col3 = st.columns([3, 1, 1])
+        
+        with search_col1:
+            search_input = st.text_input(
+                "🔍 Search Location",
+                placeholder="Enter address (e.g., 'Times Square, NYC') or coordinates (e.g., '40.7580, -73.9855')",
+                help="Search by address or paste lat/long coordinates to find nearby nodes"
+            )
+        
+        with search_col2:
+            search_radius = st.selectbox("Search Radius", [5, 10, 25, 50, 100], index=1, format_func=lambda x: f"{x} km")
+        
+        with search_col3:
+            search_btn = st.button("🔍 Search", type="primary", use_container_width=True)
+        
+        search_lat, search_lon, search_label = None, None, None
+        nearby_nodes = pd.DataFrame()
+        
+        if search_btn and search_input:
+            lat, lon, label = parse_coordinates(search_input)
+            if lat is None:
+                lat, lon, label = geocode_address(search_input)
+            
+            if lat and lon:
+                search_lat, search_lon, search_label = lat, lon, label
+                st.session_state.search_location = (lat, lon, label)
+                st.success(f"📍 Found: {label}")
+                
+                with st.spinner("Finding nearby nodes..."):
+                    nearby_nodes = get_nodes_near_location(lat, lon, search_radius)
+                    
+                    if not nearby_nodes.empty:
+                        st.info(f"Found {len(nearby_nodes)} node(s) within {search_radius}km")
+                    else:
+                        st.warning(f"No nodes found within {search_radius}km of this location")
+            else:
+                st.error("Could not find location. Try a different address or coordinates.")
+        
+        if st.session_state.search_location:
+            search_lat, search_lon, search_label = st.session_state.search_location
+            if st.button("Clear Search", type="secondary"):
+                st.session_state.search_location = None
+                st.rerun()
         
         map_col1, map_col2 = st.columns([3, 1])
         
         with map_col2:
-            map_style = st.selectbox(
-                "Map Style",
-                ["open-street-map", "carto-positron", "carto-darkmatter", "stamen-terrain"],
-                index=0
-            )
-            show_track = st.checkbox("Show movement track", value=True)
-            track_limit = st.slider("Track points", 10, 200, 50) if show_track else 50
+            st.markdown("#### Map Options")
+            show_track = st.checkbox("Show movement tracks", value=True, key="show_track_main")
+            track_limit = st.slider("Max data points", 50, 500, 200) if show_track else 200
         
         try:
             positions_query = f"""
@@ -333,7 +638,12 @@ def main():
                 gps_timestamp,
                 ingested_at,
                 battery_level,
-                rx_snr
+                voltage,
+                temperature,
+                relative_humidity,
+                uptime_seconds,
+                rx_snr,
+                rx_rssi
             FROM DEMO.DEMO.MESHTASTIC_DATA
             WHERE packet_type = 'position'
               AND latitude IS NOT NULL 
@@ -341,83 +651,36 @@ def main():
               AND latitude != 0
               AND longitude != 0
               AND ingested_at >= {time_filter}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY from_id ORDER BY ingested_at DESC) = 1
             ORDER BY ingested_at DESC
             LIMIT {track_limit}
             """
             positions = run_query(positions_query)
             
             with map_col1:
-                if not positions.empty:
-                    latest = positions.groupby('FROM_ID').first().reset_index()
+                if not positions.empty or (search_lat and search_lon):
+                    display_df = nearby_nodes if not nearby_nodes.empty else positions
                     
-                    fig = go.Figure()
-                    
-                    if show_track and len(positions) > 1:
-                        for node_id in positions['FROM_ID'].unique():
-                            node_track = positions[positions['FROM_ID'] == node_id].sort_values('INGESTED_AT')
-                            if len(node_track) > 1:
-                                fig.add_trace(go.Scattermapbox(
-                                    lat=node_track['LATITUDE'],
-                                    lon=node_track['LONGITUDE'],
-                                    mode='lines',
-                                    line=dict(width=2, color='cyan'),
-                                    name=f"{node_id} track",
-                                    opacity=0.6
-                                ))
-                    
-                    battery_colors = []
-                    for _, row in latest.iterrows():
-                        color, _ = get_battery_status(row.get('BATTERY_LEVEL'))
-                        battery_colors.append(color)
-                    
-                    hover_text = []
-                    for _, row in latest.iterrows():
-                        text = f"<b>{row['FROM_ID']}</b><br>"
-                        text += f"Altitude: {row.get('ALTITUDE', 'N/A')} m<br>"
-                        text += f"Speed: {row.get('GROUND_SPEED', 'N/A')} m/s<br>"
-                        text += f"Satellites: {row.get('SATS_IN_VIEW', 'N/A')}<br>"
-                        text += f"Battery: {row.get('BATTERY_LEVEL', 'N/A')}%<br>"
-                        text += f"SNR: {row.get('RX_SNR', 'N/A')} dB<br>"
-                        text += f"Last seen: {format_timestamp(row.get('INGESTED_AT'))}"
-                        hover_text.append(text)
-                    
-                    fig.add_trace(go.Scattermapbox(
-                        lat=latest['LATITUDE'],
-                        lon=latest['LONGITUDE'],
-                        mode='markers+text',
-                        marker=dict(
-                            size=20,
-                            color=battery_colors,
-                            opacity=0.9
-                        ),
-                        text=latest['FROM_ID'].str[-4:],
-                        textposition='top center',
-                        textfont=dict(size=10, color='white'),
-                        hovertext=hover_text,
-                        hoverinfo='text',
-                        name='Current Position'
-                    ))
-                    
-                    center_lat = positions['LATITUDE'].mean()
-                    center_lon = positions['LONGITUDE'].mean()
-                    
-                    fig.update_layout(
-                        mapbox=dict(
-                            style=map_style,
-                            center=dict(lat=center_lat, lon=center_lon),
-                            zoom=13
-                        ),
-                        showlegend=True,
-                        height=550,
-                        margin={"r": 0, "t": 0, "l": 0, "b": 0}
+                    folium_map = create_folium_map(
+                        display_df,
+                        center_lat=search_lat,
+                        center_lon=search_lon,
+                        search_lat=search_lat,
+                        search_lon=search_lon,
+                        search_label=search_label
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st_data = st_folium(
+                        folium_map,
+                        width=None,
+                        height=600,
+                        returned_objects=["last_clicked"],
+                        key="main_map"
+                    )
                     
-                    st.markdown("#### Position Details")
-                    pos_display = latest[['FROM_ID', 'LATITUDE', 'LONGITUDE', 'ALTITUDE', 'GROUND_SPEED', 'SATS_IN_VIEW', 'INGESTED_AT']].copy()
-                    pos_display.columns = ['Node', 'Latitude', 'Longitude', 'Altitude (m)', 'Speed (m/s)', 'Satellites', 'Last Update']
-                    st.dataframe(pos_display, use_container_width=True, hide_index=True)
+                    if st_data and st_data.get("last_clicked"):
+                        clicked = st_data["last_clicked"]
+                        st.info(f"Clicked: {clicked['lat']:.6f}, {clicked['lng']:.6f}")
                 else:
                     st.info("No position data available. Make sure the device has GPS lock.")
                     st.markdown("""
@@ -428,6 +691,120 @@ def main():
                     """)
         except Exception as e:
             st.error(f"Error loading map data: {e}")
+        
+        if not nearby_nodes.empty:
+            st.markdown("#### Nodes Near Search Location")
+            display_cols = ['FROM_ID', 'DISTANCE_KM', 'LATITUDE', 'LONGITUDE', 'BATTERY_LEVEL', 'RX_SNR', 'INGESTED_AT']
+            display_df = nearby_nodes[display_cols].copy()
+            display_df.columns = ['Node ID', 'Distance (km)', 'Latitude', 'Longitude', 'Battery %', 'SNR (dB)', 'Last Seen']
+            display_df['Distance (km)'] = display_df['Distance (km)'].round(2)
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+        elif not positions.empty:
+            st.markdown("#### All Node Positions")
+            pos_display = positions[['FROM_ID', 'LATITUDE', 'LONGITUDE', 'ALTITUDE', 'BATTERY_LEVEL', 'RX_SNR', 'INGESTED_AT']].copy()
+            pos_display.columns = ['Node', 'Latitude', 'Longitude', 'Altitude (m)', 'Battery %', 'SNR (dB)', 'Last Update']
+            st.dataframe(pos_display, use_container_width=True, hide_index=True)
+    
+    with tab_agent:
+        st.subheader("🤖 Meshtastic AI Agent")
+        st.markdown("""
+        Ask questions about your mesh network in natural language. The agent can query device locations, 
+        battery status, signal quality, network health, and more.
+        """)
+        
+        example_questions = [
+            "What Meshtastic nodes are active right now?",
+            "Show me devices with low battery",
+            "What is the network health summary?",
+            "Which devices have poor signal quality?",
+            "What are the recent GPS positions?",
+            "Find nodes near coordinates 40.7580, -73.9855",
+            "How many packets were received in the last hour?",
+            "What is the average battery level across all devices?"
+        ]
+        
+        with st.expander("💡 Example Questions", expanded=False):
+            cols = st.columns(2)
+            for i, q in enumerate(example_questions):
+                if cols[i % 2].button(q, key=f"example_{i}", use_container_width=True):
+                    st.session_state.agent_input = q
+        
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                st.markdown(f"""
+                <div class="chat-message user-message">
+                    <strong>You:</strong> {msg["content"]}
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="chat-message agent-message">
+                    <strong>🤖 Agent:</strong><br>{msg["content"]}
+                </div>
+                """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns([5, 1])
+        
+        with col1:
+            user_input = st.text_input(
+                "Ask the Meshtastic Agent",
+                value=st.session_state.get("agent_input", ""),
+                placeholder="e.g., 'What nodes are near Times Square?' or 'Show me devices with low battery'",
+                key="agent_question",
+                label_visibility="collapsed"
+            )
+        
+        with col2:
+            ask_btn = st.button("Ask", type="primary", use_container_width=True)
+        
+        if ask_btn and user_input:
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            
+            with st.spinner("Agent is thinking..."):
+                response = query_cortex_agent(user_input)
+            
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.session_state.agent_input = ""
+            st.rerun()
+        
+        col1, col2 = st.columns(2)
+        if col1.button("🗑️ Clear Chat History"):
+            st.session_state.chat_history = []
+            st.rerun()
+        
+        st.divider()
+        
+        st.markdown("#### Quick Location Query")
+        loc_col1, loc_col2, loc_col3 = st.columns([3, 1, 1])
+        
+        with loc_col1:
+            location_query = st.text_input(
+                "Location",
+                placeholder="Enter address or coordinates",
+                key="agent_location"
+            )
+        
+        with loc_col2:
+            query_radius = st.selectbox("Radius", [5, 10, 25, 50], index=1, format_func=lambda x: f"{x} km", key="agent_radius")
+        
+        with loc_col3:
+            if st.button("Find Nodes", type="secondary", use_container_width=True):
+                if location_query:
+                    lat, lon, label = parse_coordinates(location_query)
+                    if lat is None:
+                        lat, lon, label = geocode_address(location_query)
+                    
+                    if lat and lon:
+                        question = f"What Meshtastic nodes are near coordinates {lat}, {lon} (within {query_radius}km)?"
+                        st.session_state.chat_history.append({"role": "user", "content": question})
+                        
+                        with st.spinner("Finding nodes..."):
+                            response = query_cortex_agent(question)
+                        
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        st.rerun()
+                    else:
+                        st.error("Could not geocode location")
     
     with tab_device:
         st.subheader("Device Health & Status")
@@ -639,10 +1016,6 @@ def main():
                     st.plotly_chart(fig_hum, use_container_width=True)
             else:
                 st.info("No environmental sensor data available.")
-                st.markdown("""
-                **Note:** The T1000-E sends environmental telemetry every 30 minutes by default.
-                You can adjust this in device settings.
-                """)
                 
         except Exception as e:
             st.error(f"Error loading environmental data: {e}")
@@ -878,514 +1251,68 @@ def main():
         except Exception as e:
             st.error(f"Error: {e}")
     
-    with tab_ai:
-        st.subheader("🤖 Cortex AI Analysis")
-        st.markdown("Use Snowflake Cortex AI SQL functions to analyze mesh network data")
-        
-        ai_col1, ai_col2 = st.columns(2)
-        
-        with ai_col1:
-            st.markdown("#### 📝 Text Message Analysis")
-            try:
-                text_msg_query = f"""
-                SELECT 
-                    from_id,
-                    text_message,
-                    ingested_at
-                FROM DEMO.DEMO.MESHTASTIC_DATA
-                WHERE packet_type = 'text'
-                  AND text_message IS NOT NULL
-                  AND text_message != ''
-                  AND ingested_at >= {time_filter}
-                ORDER BY ingested_at DESC
-                LIMIT 20
-                """
-                text_msgs = run_query(text_msg_query)
-                
-                if not text_msgs.empty:
-                    st.markdown("**Sentiment Analysis on Messages:**")
-                    sentiment_query = f"""
-                    SELECT 
-                        from_id,
-                        text_message,
-                        SNOWFLAKE.CORTEX.SENTIMENT(text_message) as sentiment_score,
-                        ingested_at
-                    FROM DEMO.DEMO.MESHTASTIC_DATA
-                    WHERE packet_type = 'text'
-                      AND text_message IS NOT NULL
-                      AND text_message != ''
-                      AND ingested_at >= {time_filter}
-                    ORDER BY ingested_at DESC
-                    LIMIT 10
-                    """
-                    try:
-                        sentiment_df = run_query(sentiment_query)
-                        if not sentiment_df.empty:
-                            for _, row in sentiment_df.iterrows():
-                                score = row['SENTIMENT_SCORE']
-                                emoji = "😊" if score > 0.3 else ("😐" if score > -0.3 else "😞")
-                                st.markdown(f"{emoji} **{row['FROM_ID']}**: {row['TEXT_MESSAGE'][:50]}...")
-                                st.caption(f"Sentiment: {score:.2f}")
-                    except Exception as e:
-                        st.info(f"Sentiment analysis requires Cortex AI access: {e}")
-                else:
-                    st.info("No text messages found. Send a message from your Meshtastic device!")
-            except Exception as e:
-                st.error(f"Error loading messages: {e}")
-        
-        with ai_col2:
-            st.markdown("#### 🔮 AI-Powered Insights")
-            
-            insight_type = st.selectbox(
-                "Select Analysis Type",
-                ["Device Health Summary", "Network Status Report", "Location Analysis", "Custom Query"]
-            )
-            
-            if st.button("Generate AI Insight", type="primary"):
-                try:
-                    if insight_type == "Device Health Summary":
-                        data_query = f"""
-                        SELECT LISTAGG(
-                            'Device:' || from_id || ' Battery:' || COALESCE(battery_level::STRING, 'N/A') || '% Temp:' || COALESCE(ROUND(temperature,1)::STRING, 'N/A') || 'C Uptime:' || COALESCE(uptime_seconds::STRING, 'N/A') || 's',
-                            '; '
-                        ) as data_summary
-                        FROM (
-                            SELECT from_id, MAX(battery_level) as battery_level, 
-                                   MAX(temperature) as temperature, MAX(uptime_seconds) as uptime_seconds
-                            FROM DEMO.DEMO.MESHTASTIC_DATA
-                            WHERE ingested_at >= {time_filter}
-                            GROUP BY from_id
-                            LIMIT 5
-                        )
-                        """
-                        data_result = run_query(data_query)
-                        if not data_result.empty and data_result['DATA_SUMMARY'].iloc[0]:
-                            data_str = data_result['DATA_SUMMARY'].iloc[0]
-                            ai_query = f"""
-                            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                                'mistral-large2',
-                                'Analyze this IoT device telemetry data and provide a brief health assessment in 2-3 sentences. Data: {data_str}'
-                            ) as insight
-                            """
-                        else:
-                            st.warning("No device data available for analysis")
-                            ai_query = None
-                            
-                    elif insight_type == "Network Status Report":
-                        data_query = f"""
-                        SELECT 
-                            'Total packets: ' || COUNT(*) || 
-                            ', Unique nodes: ' || COUNT(DISTINCT from_id) ||
-                            ', Avg SNR: ' || COALESCE(ROUND(AVG(rx_snr), 1)::STRING, 'N/A') || 'dB' ||
-                            ', Avg RSSI: ' || COALESCE(ROUND(AVG(rx_rssi), 1)::STRING, 'N/A') || 'dBm' ||
-                            ', Position updates: ' || SUM(CASE WHEN packet_type='position' THEN 1 ELSE 0 END) ||
-                            ', Telemetry packets: ' || SUM(CASE WHEN packet_type='telemetry' THEN 1 ELSE 0 END)
-                            as data_summary
-                        FROM DEMO.DEMO.MESHTASTIC_DATA 
-                        WHERE ingested_at >= {time_filter}
-                        """
-                        data_result = run_query(data_query)
-                        if not data_result.empty and data_result['DATA_SUMMARY'].iloc[0]:
-                            data_str = data_result['DATA_SUMMARY'].iloc[0]
-                            ai_query = f"""
-                            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                                'mistral-large2',
-                                'Analyze this LoRa mesh network data and provide a brief network health report in 2-3 sentences. Include signal quality assessment. Data: {data_str}'
-                            ) as insight
-                            """
-                        else:
-                            st.warning("No network data available for analysis")
-                            ai_query = None
-                            
-                    elif insight_type == "Location Analysis":
-                        data_query = f"""
-                        SELECT LISTAGG(
-                            'Lat:' || ROUND(latitude, 4)::STRING || ' Lon:' || ROUND(longitude, 4)::STRING || ' Alt:' || COALESCE(altitude::STRING, 'N/A') || 'm',
-                            '; '
-                        ) as data_summary
-                        FROM (
-                            SELECT latitude, longitude, altitude
-                            FROM DEMO.DEMO.MESHTASTIC_DATA
-                            WHERE packet_type = 'position' 
-                              AND latitude IS NOT NULL
-                              AND ingested_at >= {time_filter}
-                            ORDER BY ingested_at DESC
-                            LIMIT 10
-                        )
-                        """
-                        data_result = run_query(data_query)
-                        if not data_result.empty and data_result['DATA_SUMMARY'].iloc[0]:
-                            data_str = data_result['DATA_SUMMARY'].iloc[0]
-                            ai_query = f"""
-                            SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                                'mistral-large2',
-                                'Analyze GPS tracking data for IoT devices and summarize movement patterns in 2-3 sentences. Data: {data_str}'
-                            ) as insight
-                            """
-                        else:
-                            st.warning("No GPS position data available for analysis")
-                            ai_query = None
-                    else:
-                        ai_query = None
-                    
-                    if ai_query:
-                        with st.spinner("Generating AI insight..."):
-                            result = run_query(ai_query)
-                            if not result.empty:
-                                st.success("**AI Analysis:**")
-                                st.markdown(result['INSIGHT'].iloc[0])
-                except Exception as e:
-                    st.error(f"AI analysis error: {e}")
-                    st.info("Ensure Cortex AI functions are enabled in your region")
-        
-        st.divider()
-        
-        st.markdown("#### 🏷️ AI Classification")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Classify Device Status:**")
-            try:
-                battery_query = f"""
-                SELECT 
-                    from_id,
-                    MAX(battery_level) as battery_level
-                FROM DEMO.DEMO.MESHTASTIC_DATA
-                WHERE battery_level IS NOT NULL
-                  AND ingested_at >= {time_filter}
-                GROUP BY from_id
-                ORDER BY battery_level
-                LIMIT 5
-                """
-                battery_df = run_query(battery_query)
-                if not battery_df.empty:
-                    for _, row in battery_df.iterrows():
-                        bat = row['BATTERY_LEVEL']
-                        if bat <= 10:
-                            status, icon = "Critical - needs immediate attention", "🔴"
-                        elif bat <= 20:
-                            status, icon = "Low - charge soon", "🟡"
-                        elif bat <= 80:
-                            status, icon = "Good - normal operation", "🟢"
-                        else:
-                            status, icon = "Excellent - fully charged", "🔵"
-                        st.markdown(f"{icon} **{row['FROM_ID']}**: {bat}% - {status}")
-                else:
-                    st.info("No battery data available")
-            except Exception as e:
-                st.info(f"Error loading battery data: {e}")
-        
-        with col2:
-            st.markdown("**Signal Quality Classification:**")
-            try:
-                signal_query = f"""
-                SELECT 
-                    from_id,
-                    ROUND(AVG(rx_snr), 1) as avg_snr
-                FROM DEMO.DEMO.MESHTASTIC_DATA
-                WHERE rx_snr IS NOT NULL
-                  AND ingested_at >= {time_filter}
-                GROUP BY from_id
-                LIMIT 5
-                """
-                signal_df = run_query(signal_query)
-                if not signal_df.empty:
-                    for _, row in signal_df.iterrows():
-                        snr = row['AVG_SNR']
-                        if snr is None or pd.isna(snr):
-                            continue
-                        if snr < -5:
-                            signal_status, icon = "Poor signal - may lose connection", "❌"
-                        elif snr < 0:
-                            signal_status, icon = "Weak signal - intermittent", "📉"
-                        elif snr < 10:
-                            signal_status, icon = "Good signal - stable", "📶"
-                        else:
-                            signal_status, icon = "Excellent signal - strong", "📶"
-                        st.markdown(f"{icon} **{row['FROM_ID']}**: {snr} dB - {signal_status}")
-                else:
-                    st.info("No signal data available")
-            except Exception as e:
-                st.info(f"Error loading signal data: {e}")
-        
-        st.divider()
-        
-        st.markdown("#### 📊 AI Data Summarization")
-        if st.button("Generate Network Summary Report"):
-            try:
-                data_query = f"""
-                SELECT LISTAGG(
-                    'Packet from device ' || from_id || 
-                    ' type:' || packet_type ||
-                    CASE WHEN battery_level IS NOT NULL THEN ' battery:' || battery_level || '%' ELSE '' END ||
-                    CASE WHEN temperature IS NOT NULL THEN ' temp:' || ROUND(temperature,1) || 'C' ELSE '' END ||
-                    CASE WHEN latitude IS NOT NULL THEN ' location:' || ROUND(latitude,4) || ',' || ROUND(longitude,4) ELSE '' END ||
-                    CASE WHEN rx_snr IS NOT NULL THEN ' SNR:' || ROUND(rx_snr,1) || 'dB' ELSE '' END,
-                    '. '
-                ) as data_text
-                FROM (
-                    SELECT * FROM DEMO.DEMO.MESHTASTIC_DATA
-                    WHERE ingested_at >= {time_filter}
-                    ORDER BY ingested_at DESC
-                    LIMIT 30
-                )
-                """
-                with st.spinner("Gathering data..."):
-                    data_result = run_query(data_query)
-                    if not data_result.empty and data_result['DATA_TEXT'].iloc[0]:
-                        data_text = data_result['DATA_TEXT'].iloc[0][:4000]
-                        summary_query = f"""
-                        SELECT SNOWFLAKE.CORTEX.SUMMARIZE('{data_text.replace("'", "''")}') as summary
-                        """
-                        with st.spinner("Generating AI summary..."):
-                            summary_result = run_query(summary_query)
-                            if not summary_result.empty:
-                                st.success("**AI-Generated Summary:**")
-                                st.markdown(summary_result['SUMMARY'].iloc[0])
-                    else:
-                        st.warning("No data available for summarization")
-            except Exception as e:
-                st.error(f"Summary generation error: {e}")
-        
-        st.divider()
-        
-        st.markdown("#### 💬 Custom AI Query")
-        custom_prompt = st.text_area(
-            "Enter your question about the mesh network data:",
-            placeholder="e.g., What patterns do you see in the device battery levels over time?",
-            height=80
-        )
-        
-        if st.button("Ask AI") and custom_prompt:
-            try:
-                stats_query = f"""
-                SELECT 
-                    COUNT(DISTINCT from_id) as devices,
-                    COUNT(*) as total_packets,
-                    ROUND(AVG(battery_level)) as avg_battery,
-                    ROUND(AVG(temperature), 1) as avg_temp,
-                    ROUND(AVG(rx_snr), 1) as avg_snr
-                FROM DEMO.DEMO.MESHTASTIC_DATA 
-                WHERE ingested_at >= {time_filter}
-                """
-                stats_result = run_query(stats_query)
-                if not stats_result.empty:
-                    row = stats_result.iloc[0]
-                    context = f"Devices: {row['DEVICES']}, Total packets: {row['TOTAL_PACKETS']}, Avg battery: {row['AVG_BATTERY']}%, Avg temp: {row['AVG_TEMP']}C, Avg SNR: {row['AVG_SNR']}dB"
-                    safe_prompt = custom_prompt.replace("'", "''")
-                    custom_ai_query = f"""
-                    SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                        'mistral-large2',
-                        'You are analyzing IoT mesh network data from Meshtastic devices. The data includes GPS positions, battery levels, temperature, humidity, and signal quality. Recent data summary: {context}. Based on this context, answer in 2-3 sentences: {safe_prompt}'
-                    ) as response
-                    """
-                    with st.spinner("AI is thinking..."):
-                        response = run_query(custom_ai_query)
-                        if not response.empty:
-                            st.success("**AI Response:**")
-                            st.markdown(response['RESPONSE'].iloc[0])
-            except Exception as e:
-                st.error(f"AI query error: {e}")
-        
-        with st.expander("Available Cortex AI Functions"):
-            st.markdown("""
-            | Function | Description |
-            |----------|-------------|
-            | `SNOWFLAKE.CORTEX.COMPLETE` | Generate text using LLMs (mistral-large2, llama3.1-70b, etc.) |
-            | `SNOWFLAKE.CORTEX.SENTIMENT` | Analyze sentiment of text (-1 to 1 scale) |
-            | `SNOWFLAKE.CORTEX.SUMMARIZE` | Generate summaries of text content |
-            | `SNOWFLAKE.CORTEX.TRANSLATE` | Translate text between languages |
-            | `SNOWFLAKE.CORTEX.CLASSIFY_TEXT` | Classify text into custom categories |
-            | `SNOWFLAKE.CORTEX.EXTRACT_ANSWER` | Extract answers from text based on questions |
-            
-            **Note:** Cortex AI functions require appropriate region and account access.
-            """)
-    
     with tab_raw:
         st.subheader("Raw Packet Data")
-        st.markdown("Browse and export raw packet data from the mesh network")
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            packet_filter = st.selectbox(
-                "Packet Type",
-                ["All", "position", "telemetry", "text", "nodeinfo", "raw"]
-            )
-        with col2:
-            node_filter = st.text_input("Node ID Filter", placeholder="e.g., !b9d44b14")
-        with col3:
-            limit = st.slider("Records", 10, 500, 100)
+        packet_type_filter = st.multiselect(
+            "Filter by Packet Type",
+            ["position", "telemetry", "text", "nodeinfo", "routing"],
+            default=[]
+        )
+        
+        node_filter = st.text_input("Filter by Node ID (partial match)", "")
         
         try:
             where_clauses = [f"ingested_at >= {time_filter}"]
-            if packet_filter != "All":
-                where_clauses.append(f"packet_type = '{packet_filter}'")
+            
+            if packet_type_filter:
+                types_str = ", ".join([f"'{t}'" for t in packet_type_filter])
+                where_clauses.append(f"packet_type IN ({types_str})")
+            
             if node_filter:
                 where_clauses.append(f"from_id ILIKE '%{node_filter}%'")
             
-            where_str = " AND ".join(where_clauses)
+            where_clause = " AND ".join(where_clauses)
             
             raw_query = f"""
             SELECT 
                 ingested_at,
-                packet_type,
                 from_id,
                 to_id,
+                packet_type,
                 latitude,
                 longitude,
                 altitude,
                 battery_level,
-                voltage,
                 temperature,
-                relative_humidity,
                 rx_snr,
                 rx_rssi,
-                text_message
+                text_message,
+                channel,
+                hop_limit
             FROM DEMO.DEMO.MESHTASTIC_DATA
-            WHERE {where_str}
+            WHERE {where_clause}
             ORDER BY ingested_at DESC
-            LIMIT {limit}
+            LIMIT 100
             """
             raw_df = run_query(raw_query)
             
-            st.dataframe(raw_df, use_container_width=True, height=400)
-            
-            col1, col2 = st.columns(2)
-            with col1:
+            if not raw_df.empty:
+                st.dataframe(raw_df, use_container_width=True, hide_index=True, height=500)
+                
                 csv = raw_df.to_csv(index=False)
                 st.download_button(
-                    "Download CSV",
+                    "📥 Download CSV",
                     csv,
-                    f"meshtastic_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    "text/csv"
+                    "meshtastic_data.csv",
+                    "text/csv",
+                    key='download-csv'
                 )
-            with col2:
-                json_data = raw_df.to_json(orient='records', date_format='iso')
-                st.download_button(
-                    "Download JSON",
-                    json_data,
-                    f"meshtastic_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    "application/json"
-                )
+            else:
+                st.info("No data matching the selected filters")
                 
         except Exception as e:
-            st.error(f"Error loading data: {e}")
-    
-    with tab_slack:
-        st.subheader("Slack Integration")
-        st.markdown("Send alerts and device updates to Slack channels")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### Manual Alert")
-            alert_node = st.text_input("Device ID", placeholder="!b9d44b14")
-            alert_type = st.selectbox(
-                "Alert Type",
-                ["position_update", "telemetry", "low_battery", "offline", "custom"]
-            )
-            custom_message = st.text_area("Custom Message (optional)", height=100)
-            
-            if st.button("Send Alert to Slack", type="primary"):
-                webhook = st.session_state.get("slack_webhook", "")
-                channel = st.session_state.get("slack_channel", "")
-                if webhook:
-                    if custom_message:
-                        msg = f"📡 *Meshtastic Manual Alert*\nDevice: `{alert_node}`\n{custom_message}"
-                    else:
-                        msg = format_slack_alert(
-                            alert_node or "unknown",
-                            alert_type,
-                            {"Time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Source": "Manual Dashboard Alert"}
-                        )
-                    if send_slack_message(webhook, msg, channel):
-                        st.success("Alert sent to Slack!")
-                    else:
-                        st.error("Failed to send alert")
-                else:
-                    st.warning("Configure Slack webhook in sidebar first")
-        
-        with col2:
-            st.markdown("#### Latest Device Summary")
-            try:
-                summary_query = f"""
-                SELECT 
-                    from_id,
-                    MAX(battery_level) as battery,
-                    MAX(latitude) as lat,
-                    MAX(longitude) as lon,
-                    MAX(temperature) as temp,
-                    MAX(ingested_at) as last_seen
-                FROM DEMO.DEMO.MESHTASTIC_DATA
-                WHERE ingested_at >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
-                GROUP BY from_id
-                """
-                summary = run_query(summary_query)
-                
-                if not summary.empty:
-                    selected_device = st.selectbox(
-                        "Select device to share",
-                        summary['FROM_ID'].tolist()
-                    )
-                    
-                    if st.button("Share Device Status to Slack"):
-                        webhook = st.session_state.get("slack_webhook", "")
-                        channel = st.session_state.get("slack_channel", "")
-                        if webhook:
-                            device_row = summary[summary['FROM_ID'] == selected_device].iloc[0]
-                            data = {
-                                "Battery": f"{device_row['BATTERY']}%" if device_row['BATTERY'] else "N/A",
-                                "Location": f"{device_row['LAT']:.4f}, {device_row['LON']:.4f}" if device_row['LAT'] else "N/A",
-                                "Temperature": f"{device_row['TEMP']:.1f}°C" if device_row['TEMP'] else "N/A",
-                                "Last Seen": str(device_row['LAST_SEEN'])[:19]
-                            }
-                            msg = format_slack_alert(selected_device, "telemetry", data)
-                            if send_slack_message(webhook, msg, channel):
-                                st.success("Device status shared!")
-                        else:
-                            st.warning("Configure Slack webhook in sidebar first")
-                    
-                    st.dataframe(summary, use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.error(f"Error loading summary: {e}")
-        
-        st.divider()
-        st.markdown("#### Slack Setup Instructions")
-        st.markdown("""
-        1. Go to [Slack API Apps](https://api.slack.com/apps)
-        2. Create a new app or select existing
-        3. Enable **Incoming Webhooks**
-        4. Create a webhook URL for your channel
-        5. Paste the webhook URL in the sidebar
-        """)
-    
-    st.divider()
-    
-    with st.expander("System Information"):
-        st.markdown("""
-        **Meshtastic Mesh Network Monitoring System**
-        
-        | Component | Details |
-        |-----------|---------|
-        | Device | SenseCAP Card Tracker T1000-E |
-        | Connection | BLE (Bluetooth Low Energy) / Serial |
-        | Data Pipeline | Snowpipe Streaming v2 REST API |
-        | Storage | Snowflake (DEMO.DEMO.MESHTASTIC_DATA) |
-        | Authentication | PAT (Programmatic Access Token) |
-        
-        **Captured Telemetry:**
-        - GPS: latitude, longitude, altitude, speed, heading, satellites, DOP values
-        - Device: battery level, voltage, uptime, channel utilization
-        - Environmental: temperature, humidity, barometric pressure
-        - Network: SNR, RSSI, hop count, channel
-        
-        **T1000-E Broadcast Intervals:**
-        - Position: Every 15 minutes (configurable)
-        - Environmental: Every 30 minutes (configurable)
-        - Device telemetry: Every 30 seconds
-        """)
-    
-    st.caption(f"Dashboard last refreshed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data via Snowpipe Streaming v2")
+            st.error(f"Error loading raw data: {e}")
 
 
 if __name__ == "__main__":
