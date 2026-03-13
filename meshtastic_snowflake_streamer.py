@@ -391,6 +391,7 @@ class MeshtasticSnowflakeStreamer:
         device_path = self.meshtastic_config.get('device_path')
         hostname = self.meshtastic_config.get('hostname')
         ble_address = self.meshtastic_config.get('ble_address')
+        ble_addresses = self.meshtastic_config.get('ble_addresses', [])
         
         self.meshtastic_receiver = MeshtasticReceiver(
             connection_type=connection_type,
@@ -400,7 +401,11 @@ class MeshtasticSnowflakeStreamer:
             on_message_callback=self._on_meshtastic_message
         )
         
-        self.meshtastic_receiver.connect()
+        if connection_type == 'auto' and ble_addresses:
+            logger.info(f"Known BLE devices: {[d['name'] for d in ble_addresses]}")
+            self.meshtastic_receiver._connect_auto(known_ble_addresses=ble_addresses)
+        else:
+            self.meshtastic_receiver.connect()
         logger.info("Connected to Meshtastic device")
         
         node_info = self.meshtastic_receiver.get_local_node_info()

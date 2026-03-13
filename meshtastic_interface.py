@@ -145,17 +145,28 @@ class MeshtasticReceiver:
         else:
             raise ValueError(f"Unknown connection type: {self.connection_type}")
     
-    def _connect_auto(self):
+    def _connect_auto(self, known_ble_addresses: list = None):
         """Auto-detect and connect to best available device - BLE first, then serial"""
         import meshtastic.serial_interface
         
         devices = self.scan_all_devices()
         
+        known_addresses = {addr['address'].upper(): addr['name'] for addr in (known_ble_addresses or [])}
+        
         if devices['ble']:
             logger.info("Trying BLE connections first (preferred)...")
-            ble_4b14 = [d for d in devices['ble'] if '4b14' in (d.get('name') or '').lower() or '4b14' in d.get('address', '').lower()]
-            ble_others = [d for d in devices['ble'] if d not in ble_4b14]
-            ble_ordered = ble_4b14 + ble_others
+            ble_known = []
+            ble_others = []
+            for d in devices['ble']:
+                addr = d.get('address', '').upper()
+                if addr in known_addresses:
+                    d['priority_name'] = known_addresses[addr]
+                    ble_known.append(d)
+                else:
+                    ble_others.append(d)
+            
+            ble_ordered = ble_known + ble_others
+            logger.info(f"Found {len(ble_known)} known devices, {len(ble_others)} other devices")
             
             for dev in ble_ordered:
                 try:
